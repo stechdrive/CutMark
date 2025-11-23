@@ -2,7 +2,7 @@
 
 Photoshop 用 UXP プラグイン **CutMark** の公開用リポジトリです。日本の縦書き絵コンテ用紙のカットナンバーの記入を効率化します。連番リネーム済みの画像を読み込みナンバリング後、PSD/JPG/PNG 書き出しを安全に行います。 
 
-[✨ CutMark ver1.1.0 PhotoshopPlugin .ccx Download)](https://github.com/stechdrive/CutMark/releases/download/v1.1.0/jp.furyu-pictures.cutmark_PS.ccx)
+[✨ CutMark ver1.1.0 PhotoshopPlugin .ccx Download](https://github.com/stechdrive/CutMark/releases/download/v1.1.0/jp.furyu-pictures.cutmark_PS.ccx)
 
 
 

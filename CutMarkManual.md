@@ -65,7 +65,7 @@ Released under the MIT license
 
 ## 3. 基本的なワークフロー
 
-![CutMark 手順概要図](./img\CutMarkManual.jpg)
+![CutMark 手順概要図](./img/CutMarkManual.jpg)
 
 最も一般的な「フォルダ内の画像を順に処理する」手順です。
 
