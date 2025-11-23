@@ -1,0 +1,57 @@
+{
+  "version": 2,
+  "presets": [
+    {
+      "id": "default-5row-150dpi",
+      "label": "FPIコンテ用紙 150dpi",
+      "dpi": 150,
+      "cutBox": {
+        "x": 60,
+        "y": 152,
+        "w": 57,
+        "h": 290,
+        "rows": 5
+      },
+      "boxPadding": {
+        "top": 12,
+        "right": 6,
+        "bottom": 8,
+        "left": 6
+      },
+      "text": {
+        "fontPSName": "Arial-Black",
+        "sizePt": 12,
+        "align": "center",
+        "colorRGB": [
+          0,
+          0,
+          0
+        ],
+        "strokePx": 2,
+        "strokeRGB": [
+          255,
+          255,
+          255
+        ],
+        "tracking": 0,
+        "hyphenate": false,
+        "compose": "singleLine",
+        "noBreak": false,
+        "breakSubToNextLine": true,
+        "leadingMode": "auto",
+        "leadingPercent": 100
+      },
+      "bg": {
+        "enabled": false,
+        "mode": "followText",
+        "paddingPx": 4,
+        "colorRGB": [
+          255,
+          255,
+          255
+        ]
+      }
+    }
+  ],
+  "default": "default-5row-150dpi"
+}

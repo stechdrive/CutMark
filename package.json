@@ -1,0 +1,22 @@
+{
+  "name": "cutmark-swc-build",
+  "private": true,
+  "description": "Spectrum Web Components bundle (IIFE) for Adobe UXP — safe subset (Accordion only)",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "prebuild": "node --input-type=module -e \"import fs from 'node:fs'; fs.mkdirSync('./vendor', { recursive: true });\"",
+    "build": "npm run prebuild && esbuild ./swc-entry.js --bundle --platform=browser --format=iife --target=es2019 --minify --sourcemap --outfile=./vendor/swc-bundle.js",
+    "watch": "npm run prebuild && esbuild ./swc-entry.js --bundle --platform=browser --format=iife --target=es2019 --sourcemap --outfile=./vendor/swc-bundle.js --watch",
+    "clean": "node --input-type=module -e \"import fs from 'node:fs'; try { fs.rmSync('./vendor/swc-bundle.js', { force: true }); fs.rmSync('./vendor/swc-bundle.js.map', { force: true }); } catch {}\""
+  },
+  "dependencies": {
+    "@swc-uxp-wrappers/utils": "2.0.1",
+    "@spectrum-web-components/accordion": "0.37.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.0"
+  }
+}

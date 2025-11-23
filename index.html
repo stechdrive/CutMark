@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<!--
+  CutMark - Photoshop UXP Plugin
+  Copyright (c) 2025 stechdrive
+  Released under the MIT license
+-->
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <title>CutMark CenterBox</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body tabindex="0"><!-- キーボードフォーカス付与（panel内ショートカット用） -->
+
+  <!--
+    SWC（Spectrum Web Components）による折りたたみ対応。
+    sp-theme / sp-accordion / sp-accordion-item は Progressive Enhancement として使用。
+    ※ SWC のバンドルがない環境でも未知要素として子要素は表示され、操作不能にならない。
+  -->
+  <sp-theme id="spectrumTheme" scale="medium">
+<!-- === CutMark: Top bar with Focus Indicator (no visible text) === -->
+<div id="cmTopBar" role="presentation" aria-hidden="false">
+  <!-- 小さな円形インジケータ（テキストやラベルは出さない / アクセシビリティ上のラベルのみ） -->
+  <div id="cmFocusDot" tabindex="-1" role="button" aria-label="パネルのキーボードフォーカス状態（非フォーカス時にクリックで復帰）"></div>
+</div>
+    <div id="scrollRoot"><!-- スクロールの親コンテナ（styles.cssで height/overflow を付与） -->
+     
+      <sp-accordion id="accordion" allow-multiple>
+
+        <sp-accordion-item id="statusSec" label="ステータス" open>
+          <section class="section">
+            <div id="status" class="status">準備中…</div>
+            <div id="progress" class="muted"></div>
+          </section>
+        </sp-accordion-item>
+
+        <sp-accordion-item id="place" label="カット番号記入" open>
+          <section class="section">
+
+            <div class="row">
+              <div class="pair">
+                <label for="digitsSel">桁数：</label>
+                <select id="digitsSel">
+                  <option value="3">3桁</option>
+                  <option value="4">4桁</option>
+                </select>
+              </div>
+
+              <div class="pair">
+                <label for="base">次番号：</label>
+                <input id="base" type="number" value="1" />
+                <div class="stepper">
+                  <button id="decBase">−</button>
+                  <button id="incBase">＋</button>
+                </div>
+              </div>
+            </div>
+
+              <div class="pair">
+                <label for="bgEnabled">塗りつぶし：</label>
+                <input type="checkbox" id="bgEnabled" />
+                <label for="bgPad">範囲拡張(px)：</label>
+                <input type="number" id="bgPad" value="4" min="0" max="64" step="1" />
+              </div>
+
+            <div class="row">
+              <div class="pair">
+                <label for="subMode" class="muted">A-B分け：</label>
+                <input id="subMode" type="checkbox" />
+              </div>
+              <div class="pair">
+                <label for="subSelect" class="muted">サブ文字:</label>
+                <select id="subSelect" disabled>
+                  <option value="" selected>−</option>
+                  <option>A</option><option>B</option><option>C</option><option>D</option><option>E</option>
+                  <option>F</option><option>G</option><option>H</option><option>I</option><option>J</option>
+                  <option>K</option><option>L</option><option>M</option><option>N</option><option>O</option>
+                  <option>P</option><option>Q</option><option>R</option><option>S</option><option>T</option>
+                  <option>U</option><option>V</option><option>W</option><option>X</option><option>Y</option>
+                  <option>Z</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="row place-actions" id="placeButtons"></div>
+
+            <div class="row">
+              <button id="placeAtSelection">選択範囲に配置</button>
+            </div>
+
+            <div class="row">
+              <div class="pair">
+                <button id="queueStart">処理開始</button>
+                <button id="backBtn">戻る</button>
+                <button id="openNext">保存して次へ</button>
+              </div>
+            </div>
+          </section>
+        </sp-accordion-item>
+
+        <sp-accordion-item id="io" label="絵コンテ読み込み" open>
+          <section class="section">
+            <div class="row">
+              <div class="pair">
+                <button id="addFolder">フォルダ追加</button>
+                <button id="addFiles">ファイル追加</button>
+              </div>
+              <div class="pair">
+                <button id="setOutFolder">出力先設定</button>
+                <button id="clearOutFolder">出力先クリア</button>
+              </div>
+            </div>
+            <div class="row">
+              <div class="pair">
+                <label for="extraOutputEnabled" class="muted">追加出力：</label>
+                <input id="extraOutputEnabled" type="checkbox" />
+              </div>
+              <div class="pair">
+                <label for="extraOutputFormat" class="muted">形式：</label>
+                <select id="extraOutputFormat" disabled>
+                  <option value="jpg">JPG</option>
+                  <option value="png">PNG</option>
+                </select>
+              </div>
+            </div>
+            <div class="row">
+              <div id="outFolderLabel" class="muted">未設定</div>
+            </div>
+          </section>
+        </sp-accordion-item>
+
+        <sp-accordion-item id="tpl" label="使用テンプレート選択">
+          <section class="section">
+
+            <!-- 使用テンプレ選択 -->
+            <div class="row">
+              <label for="tplSelect">使用テンプレ：</label>
+              <select id="tplSelect"></select>
+              <button id="deleteTplBtn" title="選択中のテンプレートを削除">削除</button>
+
+            </div>
+
+            <!-- 新規テンプレ作成：SWCアコーディオン（既定は閉） -->
+            <sp-accordion id="tplAccordion" allow-multiple>
+              <sp-accordion-item id="tplCreateItem" label="新規テンプレート作成">
+                <div class="fieldset">
+
+                  <div class="row">
+                    <label for="tplName">テンプレ名：</label>
+                    <input type="text" id="tplName" placeholder="例：FPIコンテ用紙 150dpi" />
+                  </div>
+
+                  <div class="row">
+                    <div class="pair">
+                      <label for="tplDpi">DPI：</label>
+                      <input type="number" id="tplDpi" value="150" min="72" max="600" step="1" />
+                    </div>
+                    <div class="pair">
+                      <label for="tplRows">行数：</label>
+                      <input type="number" id="tplRows" value="5" min="1" max="9" step="1" />
+                    </div>
+                  </div>
+
+                  <div class="row">
+                    <div class="pair">
+                      <label for="tplFontSel">フォント：</label>
+                      <select id="tplFontSel">  <!-- 既定フォント（未選択時のフェイルセーフ）。Lazy列挙後に上書きされます -->
+                      <option value="Arial-Black" selected>Arial-Black (default)</option>
+                    </select>
+                    </div>
+                  </div>
+
+                  <div class="row">
+                    <label for="tplFontSizePt">サイズ：</label>
+                    <select id="tplFontSizePreset" title="プリセット">
+                      <option value="12" selected>12pt</option>
+                      <option value="14">14pt</option>
+                      <option value="16">16pt</option>
+                      <option value="18">18pt</option>
+                      <option value="24">24pt</option>
+                    </select>
+                    <input type="number" id="tplFontSizePt" value="12" min="8" max="50" step="1" />
+</div>
+
+                  <!-- ★ 1コマ目：XYWH を fieldset でまとめる -->
+                  <fieldset class="xywh">
+                    <legend class="xywh-title">1コマ目の位置サイズ</legend>
+
+                    <div class="row xywh-row">
+                      <div class="xywh-pair">
+                        <label for="tplX">X：</label>
+                        <input type="number" id="tplX" value="60" />
+                      </div>
+                      <div class="xywh-pair">
+                        <label for="tplY">Y：</label>
+                        <input type="number" id="tplY" value="152" />
+                      </div>
+                      <div class="xywh-pair">
+                        <label for="tplW">W：</label>
+                        <input type="number" id="tplW" value="57" />
+                      </div>
+                      <div class="xywh-pair">
+                        <label for="tplH">H：</label>
+                        <input type="number" id="tplH" value="290" />
+                      </div>
+                    </div>
+                  </fieldset>
+
+                  <div class="row">
+                    <div class="xywh-pair">
+                      <label for="tplX">左余白(px)：</label>
+                      <input type="number" id="tplPadLeft" value="6" />
+                    </div>
+                    <div class="xywh-pair">
+                      <label for="tplY">上余白(px)：</label>
+                      <input type="number" id="tplPadTop" value="12" />
+                    </div>
+                    <div class="xywh-pair">
+                      <label for="tplW">右余白(px)：</label>
+                      <input type="number" id="tplPadRight" value="6" />
+                    </div>
+                    <div class="xywh-pair">
+                      <label for="tplH">下余白(px)：</label>
+                      <input type="number" id="tplPadBottom" value="8" />
+                    </div>
+                  </div>
+
+                  <div class="row">
+                    <button id="readBoundsFromSelection">選択範囲からXYWH読取</button>
+                  </div>
+
+                  <div class="row">
+                    <button id="tplCreate">テンプレ作成</button>
+                  </div>
+                </div>
+              </sp-accordion-item>
+            </sp-accordion>
+
+          </section>
+        </sp-accordion-item>
+
+      </sp-accordion>
+    </div>
+  </sp-theme>
+
+  <script src="vendor/swc-bundle.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>

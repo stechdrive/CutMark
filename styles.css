@@ -1,0 +1,508 @@
+/*
+ * CutMark - Styles
+ * Copyright (c) 2025 stechdrive
+ * Released under the MIT license
+ */
+/* ============================================================================
+ * CutMark - styles.css (UXP / Photoshop)
+ * 目的:
+ *  - 役割別の幅ポリシー（広幅: select(使用テンプレ/フォント)、狭幅: 数値/短文入力）
+ *  - px に依存せず em で制御（UXP は ch 非対応のため未使用）
+ *  - フォーカス可視性: クリック等では落ち着いた見た目、キーボード操作時は :focus-visible で明示
+ * ========================================================================== */
+
+/* ---- トークン ------------------------------------------------------------- */
+:root {
+  --cm-bg: var(--uxp-host-background-color);
+  --cm-fg: var(--uxp-host-text-color);
+  --cm-fg-secondary: var(--uxp-host-text-color-secondary, #9aa0a6);
+  --cm-border: var(--uxp-host-border-color);
+  --cm-focus: var(--uxp-host-link-text-color);
+  --cm-radius: 4px;
+  --cm-gap: 2px;
+  /* トップバーの高さ（常時表示エリア） */
+  --cm-topbar-h: 24px;
+
+
+  /* 数値/短文入力の幅ポリシー（相対のみ / ch は使わない） */
+  /* 1桁の見かけ幅を em で近似（等幅数字前提で 0.55〜0.62em が目安） */
+  --cm-digit-em: 0.58em;
+  /* 表示したい桁数（例: 4） */
+  --cm-num-digits: 4;
+  /* 左右内側余白見込み（パディング/ボーダー相当を含めた相対値） */
+  --cm-num-pad-inline: 0.9em;
+  /* 下限/上限（強すぎると“変えても動かない”ので緩めに設定） */
+  --cm-num-min: 4.2em;
+  --cm-num-max: 12em;
+}
+
+/* ---- ベース --------------------------------------------------------------- */
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--cm-fg);
+  background: var(--cm-bg);
+  font-size: var(--uxp-host-font-size);
+  line-height: 1.4;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+sp-theme {
+  display: block;
+  height: 100%;
+}
+
+#scrollRoot {
+  height: calc(100% - var(--cm-topbar-h));
+  padding: 8px;
+  overflow: auto;
+}
+
+/* ---- セクション/フィールドセット ----------------------------------------- */
+.section,
+.fieldset {
+  margin: 2px 0;
+  padding: 2px;
+  border: 1px solid var(--cm-border);
+  border-radius: var(--cm-radius);
+  background: transparent;
+  min-width: 0;
+}
+
+.section>h2,
+.section>.section-title,
+.fieldset>legend {
+  margin: 0 0 2px;
+  font-size: 12px;
+  color: var(--cm-fg);
+}
+
+/* ---- ボタン --------------------------------------------------------------- */
+button {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--cm-border);
+  background: transparent;
+  color: var(--cm-fg);
+  padding: 2px 2px;
+  border-radius: var(--cm-radius);
+  cursor: pointer;
+  max-width: 100%;
+  /* ▼ Flex 子でも“伸びない”ことをデフォルト化 */
+  flex-grow: 0;
+}
+
+button:hover:not([disabled]) {
+  background: var(--uxp-host-widget-hover-background-color);
+  color: var(--uxp-host-widget-hover-text-color);
+}
+
+button[disabled] {
+  /* テーマ変数を使わず、強制的に「半透明のグレー」にする */
+  /* #808080 は中間色なので、ダーク(白文字)でもライト(黒文字)でもそこそこ見えます */
+  color: #808080 !important;
+
+  border-color: transparent !important;
+  background-color: transparent !important;
+  opacity: 0.5 !important;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* ---- 入力系（テーマ準拠） ------------------------------------------------ */
+input[type="text"],
+input[type="number"],
+input[type="search"],
+input[type="password"],
+select,
+textarea {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-color: var(--cm-bg);
+  color: var(--cm-fg);
+  border: 1px solid var(--cm-border);
+  border-radius: var(--cm-radius);
+  padding: 2px 2px;
+  min-height: 12px;
+  max-width: 100%;
+}
+
+/* === フォーカス可視性ポリシー ============================================= */
+/* クリック等（マウス/ペン）での :focus は“控えめ”に（リングは出さない） */
+:where(button, input, select, textarea):focus:not(:focus-visible) {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: var(--cm-border) !important;
+}
+
+/* キーボード操作時は :focus-visible で明示（見失わない） */
+:where(button, input, select, textarea):focus-visible,
+sp-picker:focus-visible {
+  outline: 2px solid var(--cm-focus);
+  outline-offset: 2px;
+  /* 影でコントラストを少し補助（UXPテーマ準拠色） */
+  box-shadow: 0 0 0 2px var(--cm-focus);
+  border-color: var(--cm-focus);
+}
+
+/* Firefox 独自のリングを抑制（:focus-visible で代替する前提） */
+:where(input, select, textarea):-moz-focusring {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: var(--cm-border) !important;
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--cm-fg-secondary);
+  opacity: 1;
+}
+
+select {
+  padding-right: 22px;
+}
+
+/* ---- 行(Rows) ------------------------------------------------------------ */
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--cm-gap);
+  flex-wrap: wrap;
+  /* 狭幅時は折返し */
+  min-width: 0;
+  justify-content: flex-start !important;
+}
+
+.row>* {
+  min-width: 0;
+}
+
+.row label {
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+/* ============================================================================
+ * 幅ポリシー（役割別）
+ * ========================================================================== */
+
+/* [A] 広幅を維持する select：使用テンプレ / フォント */
+#tplSelect,
+#tplFontSel {
+  flex: 0 1 12em;
+  min-width: 6em;
+  max-width: 100%;
+  width: auto;
+}
+
+/* [B] 狭幅に統一：.row 内の number & 短文 text（px不使用・flex-basis直指定）
+   - 1桁幅を em で近似（--cm-digit-em）× 桁数（--cm-num-digits）
+   - → flex-basis = 桁幅合算 + 内側余白見込み
+   - min/max は em で緩く制限
+*/
+.row input[type="number"],
+.row input[type="text"]:not(#tplName) {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+
+  /* basis 優先で確実に効かせる（grow/shrink は 0） */
+  flex: 0 0 auto;
+  flex-basis: calc(var(--cm-num-digits) * var(--cm-digit-em) + var(--cm-num-pad-inline));
+  min-width: var(--cm-num-min);
+  max-width: var(--cm-num-max);
+}
+
+/* “label直後”パターンも確実に上書き（特異性合わせ） */
+.row>label+input[type="number"],
+.pair>label+input[type="number"],
+.row>label+input[type="text"]:not(#tplName),
+.pair>label+input[type="text"]:not(#tplName) {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+
+  flex: 0 0 auto;
+  flex-basis: calc(var(--cm-num-digits) * var(--cm-digit-em) + var(--cm-num-pad-inline));
+  min-width: var(--cm-num-min);
+  max-width: var(--cm-num-max);
+}
+
+/* ---- ペア（label+control の塊） ------------------------------------------- */
+.pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+  /* ラベルと入力の物理分断は避ける */
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.pair>label {
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+/* ============================================================================
+ * 修正：新規テンプレ作成カード「1コマ目：X/Y/W/H」の入力幅を詰める
+ * ========================================================================== */
+.xywh-pair input[type="number"] {
+  /* 汎用ルールを上書きし、幅をより小さく設定 */
+  flex-basis: auto;
+  /* flex-basis の計算をリセット */
+  width: 4.5em;
+  /* 幅を小さく固定（emはフォントサイズに依存する相対単位） */
+  min-width: 3em;
+  /* 最小幅も小さくする */
+}
+
+/* ---- ステッパ（−／＋） --------------------------------------------------- */
+.stepper {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.stepper>button {
+  /* 幅と高さを同じ値にして正方形にする */
+  width: 2.2em;
+  height: 2.2em;
+  padding: 0;
+  /* パディングをなくす */
+  line-height: 1.8em;
+  /* テキストを垂直中央に揃える */
+  text-align: center;
+  /* テキストを水平中央に揃える */
+  min-width: 0;
+}
+
+/* ---- 「nコマ目」ボタン等 -------------------------------------------------- */
+.place-actions,
+#placeButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cm-gap);
+  margin: 8px 0 12px;
+}
+
+/* 以前の伸長指定（flex: 1 1 96px; / min-width: 96px;）は削除 */
+
+/* ---- アコーディオン（SWC） ------------------------------------------------ */
+sp-accordion {
+  display: block;
+  margin: 0 0 2px;
+  border: none;
+}
+
+sp-accordion-item {
+  --spectrum-accordion-item-header-background-color: transparent;
+  --spectrum-accordion-item-divider-thickness: 0;
+}
+
+sp-accordion-item::part(header),
+sp-accordion-item::part(heading) {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 2px 2px !important;
+  color: var(--cm-fg) !important;
+}
+
+sp-accordion-item::part(chevron) {
+  margin-right: 2px !important;
+  color: var(--cm-fg-secondary);
+}
+
+/* ---- <details> 互換 ------------------------------------------------------- */
+details.accordion summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+details.accordion summary::-webkit-details-marker {
+  display: none;
+}
+
+details.accordion summary::before {
+  content: "▸";
+  color: var(--cm-fg-secondary);
+}
+
+details.accordion[open] summary::before {
+  content: "▾";
+}
+
+/* ---- ステータス/ユーティリティ ------------------------------------------- */
+#status,
+#progress {
+  color: var(--cm-fg-secondary);
+}
+
+#outFolderLabel {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.muted {
+  color: var(--cm-fg-secondary);
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ============================================================================
+ * 新規テンプレ作成カード「1コマ目：X/Y/W/H」
+ * 固定幅は廃止。共通ポリシー（上記[B]）に従う。
+ * ========================================================================== */
+.row.xywh-row {
+  flex-wrap: wrap;
+  gap: var(--cm-gap);
+  align-items: center;
+}
+
+.xywh-title {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  margin-right: 2px;
+}
+
+.xywh-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* ---- 密度レスポンシブ ----------------------------------------------------- */
+@media (max-width: 420px) {
+  :root {
+    --cm-gap: 2px;
+  }
+
+  .section {
+    padding: 2px;
+  }
+
+  button {
+    padding: 2px 2px;
+  }
+}
+
+
+/* === CutMark: Modal/Overlay fine-tuning (optional) === */
+#cm-reset-overlay {
+  pointer-events: auto;
+}
+
+sp-dialog[modal] {
+  z-index: 2147483647 !important;
+}
+
+sp-underlay {
+  z-index: 2147483646 !important;
+}
+
+
+/* ============================================================================
+ * フォーカスインジケータ用スタイル（Top Bar & Focus Dot）
+ *  - 要件:
+ *    * パネル上部に常時表示（アコーディオンの開閉やスクロールに影響されない）
+ *    * インジケータは小さな円のみ（テキスト/ラベル無し）
+ *    * 非フォーカス時は控えめ / フォーカス時は明確に点灯
+ *    * Photoshop UI テーマ（ライト/ダーク）に自動追従（--uxp-host-* 変数を使用）
+ *  - 実装ノート:
+ *    * 色は既存トークン --cm-bg / --cm-border / --cm-focus を流用
+ *    * クリック時の挙動（非フォーカス→フォーカス復帰）は ui.js 側で制御
+ * ========================================================================== */
+
+/* --- 常時表示のトップバー --------------------------------------------------- */
+#cmTopBar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  /* 右寄せ配置 */
+  gap: 8px;
+  box-sizing: border-box;
+  height: var(--cm-topbar-h);
+  padding: 0 8px;
+  background: var(--cm-bg);
+  border-bottom: 1px solid var(--cm-border);
+}
+
+/* --- 小さな円形インジケータ（テキスト無し） ------------------------------- */
+#cmFocusDot {
+  inline-size: 12px;
+  width: 12px;
+  /* 論理プロパティ（LTR/RTLどちらでも一定） */
+  block-size: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-sizing: border-box;
+  transition: background-color 120ms ease, border-color 120ms ease,
+    box-shadow 120ms ease, transform 100ms ease;
+  outline: none;
+  /* マウス操作主体のため、既定アウトラインは無効化 */
+  /* 既定は「非フォーカス: 控えめ」な見た目 */
+  background: transparent;
+  border: 1px solid var(--cm-border);
+  box-shadow: inset 0 0 0 1px var(--cm-border);
+  cursor: default;
+  /* 既定はクリック不可（ui.js で非フォーカス時のみ有効化） */
+  opacity: 0.95;
+  /* テーマ差で沈みすぎるのを軽減 */
+}
+
+/* --- 状態クラス（ui.js で付け外し） --------------------------------------- */
+/* 非フォーカス時: クリックでフォーカス復帰できることを示す（ポインタ形状のみ） */
+#cmFocusDot.is-blurred {
+  cursor: pointer;
+  /* 塗りは行わず控えめなまま。必要に応じて hover で僅かに強調 */
+}
+
+#cmFocusDot.is-blurred:hover {
+  transform: scale(1.06);
+}
+
+/* フォーカス時: はっきり点灯（テーマ準拠ハイライト色） */
+#cmFocusDot.is-focused {
+  background: var(--cm-focus);
+  border-color: var(--cm-focus);
+  /* 外周に薄い際立ちを付与（背景色との境界を確保） */
+  box-shadow: 0 0 0 1px var(--cm-border);
+  cursor: default;
+}
+
+/* --- アクセシビリティ: マウスではなくキーボードでドットがフォーカスされた場合の可視化
+   ※ 通常は tabindex=-1 のため到達しないが、将来の拡張に備えて定義 --- */
+#cmFocusDot:focus-visible {
+  outline: 2px solid var(--cm-focus);
+  outline-offset: 2px;
+}
