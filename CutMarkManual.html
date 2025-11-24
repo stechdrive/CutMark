@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CutMark Ver1.2.0 ユーザーマニュアル</title>
+<style>
+    :root {
+        /* カラー設定 */
+        --primary: #0056b3;       /* メインカラー（青） */
+        --accent: #e65100;        /* アクセント（オレンジ） */
+        --bg-body: #f4f6f8;       /* 全体背景 */
+        --bg-card: #ffffff;       /* カード背景 */
+        --text-main: #333333;
+        --text-sub: #666666;
+        --border: #e0e0e0;
+        
+        /* サイズ設定 */
+        --max-width: 800px;
+        --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        background-color: var(--bg-body);
+        color: var(--text-main);
+        line-height: 1.6;
+        margin: 0;
+        padding: 20px;
+        font-size: 16px;
+    }
+
+    .container {
+        max-width: var(--max-width);
+        margin: 0 auto;
+    }
+
+    /* ヘッダー */
+    header {
+        text-align: center;
+        margin-bottom: 30px;
+        padding: 20px;
+        background: var(--bg-card);
+        border-radius: var(--radius);
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    }
+
+    h1 { margin: 0 0 10px 0; color: var(--primary); font-size: 1.8rem; }
+
+    .version-badge {
+        display: inline-block;
+        background: #e3f2fd;
+        color: var(--primary);
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-weight: bold;
+        font-size: 0.9rem;
+        margin-bottom: 10px;
+    }
+
+    .intro { font-size: 0.95rem; color: var(--text-sub); margin: 0; }
+
+    /* セクション共通 */
+    section { margin-bottom: 40px; }
+
+    h2 {
+        font-size: 1.4rem;
+        border-left: 5px solid var(--primary);
+        padding-left: 12px;
+        margin-bottom: 20px;
+        color: #2c3e50;
+    }
+
+    h3 { font-size: 1.1rem; margin: 0 0 10px 0; color: var(--primary); }
+
+    /* カードスタイル */
+    .card {
+        background: var(--bg-card);
+        padding: 20px;
+        border-radius: var(--radius);
+        border: 1px solid var(--border);
+        margin-bottom: 15px;
+    }
+
+    /* 基本的な使い方（ステップ表示） */
+    .step-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 15px;
+    }
+    
+    @media (min-width: 600px) {
+        .step-grid { grid-template-columns: 1fr 1fr; }
+    }
+
+    .step-card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 15px;
+        position: relative;
+        border-top: 4px solid var(--accent);
+    }
+
+    .step-num {
+        position: absolute;
+        top: -12px;
+        left: 12px;
+        background: var(--accent);
+        color: white;
+        font-weight: bold;
+        padding: 2px 10px;
+        border-radius: 12px;
+        font-size: 0.8rem;
+    }
+
+    /* 機能詳細（アコーディオン） */
+    details {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        margin-bottom: 10px;
+        overflow: hidden;
+    }
+
+    summary {
+        padding: 15px;
+        cursor: pointer;
+        font-weight: bold;
+        color: var(--primary);
+        display: flex;
+        align-items: center;
+        list-style: none;
+        transition: background 0.2s;
+    }
+    
+    summary::-webkit-details-marker { display: none; }
+
+    summary::after {
+        content: '+';
+        margin-left: auto;
+        font-size: 1.2rem;
+        font-weight: normal;
+    }
+
+    details[open] summary {
+        background: #f8f9fa;
+        border-bottom: 1px solid var(--border);
+    }
+
+    details[open] summary::after { content: '−'; }
+
+    .details-content { padding: 15px; font-size: 0.95rem; }
+
+    /* リスト・注釈 */
+    ul, ol { margin: 0; padding-left: 20px; }
+    li { margin-bottom: 8px; }
+    
+    .note {
+        font-size: 0.85rem;
+        color: var(--text-sub);
+        background: #f0f0f0;
+        padding: 8px;
+        border-radius: 4px;
+        margin-top: 10px;
+        display: block;
+        border-left: 3px solid #ccc;
+    }
+    
+    .note strong { color: #333; }
+
+    /* ショートカットキー装飾 */
+    kbd {
+        display: inline-block;
+        padding: 2px 6px;
+        font-family: monospace;
+        font-size: 0.9em;
+        color: #333;
+        vertical-align: middle;
+        background-color: #f7f7f7;
+        border: 1px solid #ccc;
+        border-bottom-color: #bbb;
+        border-radius: 3px;
+        box-shadow: 0 2px 0 rgba(0,0,0,0.1);
+    }
+
+    /* テーブル */
+    .shortcut-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+    }
+    
+    .shortcut-table th, .shortcut-table td {
+        padding: 10px;
+        border-bottom: 1px solid var(--border);
+        text-align: left;
+    }
+    
+    .shortcut-table th {
+        background: #f8f9fa;
+        color: var(--text-sub);
+        width: 30%;
+    }
+
+    /* フッター */
+    footer {
+        text-align: center;
+        margin-top: 40px;
+        font-size: 0.8rem;
+        color: var(--text-sub);
+        border-top: 1px solid var(--border);
+        padding-top: 20px;
+    }
+</style>
+</head>
+<body>
+
+<div class="container">
+
+    <header>
+        <h1>CutMark ユーザーマニュアル</h1>
+        <span class="version-badge">Ver 1.2.0</span>
+        <p class="intro">
+            日本の縦書き絵コンテ用紙のカットナンバー記入作業を効率化するPhotoshopプラグインです。
+        </p>
+    </header>
+
+    <!-- インストール -->
+    <section>
+        <h2>1. インストール</h2>
+        <div class="card">
+            <ol>
+                <li>配布された <code>.ccx</code> ファイルをダブルクリックし、Adobe Creative Cloud デスクトップアプリ経由でインストールします。</li>
+                <li>Photoshop を起動し、メニューの <strong>プラグイン > CutMark</strong> を選択してパネルを開きます。</li>
+            </ol>
+        </div>
+    </section>
+
+    <!-- 基本的な使い方 -->
+    <section>
+        <h2>2. 基本的な使い方</h2>
+        <div class="step-grid">
+            <div class="step-card">
+                <span class="step-num">STEP 1</span>
+                <h3>準備</h3>
+                <p>絵コンテ画像ファイル（JPG/PNG/PSD）をフォルダにまとめ、ファイル名をページ順の連番にします。</p>
+            </div>
+
+            <div class="step-card">
+                <span class="step-num">STEP 2</span>
+                <h3>読み込みと開始</h3>
+                <ol>
+                    <li><strong>「フォルダ追加」</strong>ボタンで画像フォルダを選択します。</li>
+                    <li>1枚目の画像が<strong>自動的に開きます</strong>。</li>
+                </ol>
+                <span class="note">※出力先（output）は自動生成されます。<br>※フォルダ直下のファイルのみ読み込まれます（サブフォルダは除外）。</span>
+            </div>
+
+            <div class="step-card">
+                <span class="step-num">STEP 3</span>
+                <h3>番号の配置</h3>
+                <ul>
+                    <li><strong>行ボタン (1〜9)</strong><br>指定した行に配置します。キーボードの <kbd>1</kbd> 〜 <kbd>9</kbd> も使用可。</li>
+                    <li><strong>選択範囲へ配置</strong><br>選択ツールで範囲を作り、ボタンを押すとその中心に配置されます。</li>
+                </ul>
+                <span class="note">
+                    <strong>配置を間違えたら？</strong><br>
+                    配置されるのは通常のレイヤーです。移動ツールで位置を直したり、削除してやり直したりできます。<br>
+                    ※やり直す際は、パネルの「次番号」を手動で戻してください。
+                </span>
+            </div>
+
+            <div class="step-card">
+                <span class="step-num">STEP 4</span>
+                <h3>保存して次へ</h3>
+                <p><strong>「次へ」</strong>ボタンまたは <kbd>Enter</kbd> キーを押します。</p>
+                <ul>
+                    <li>PSD（設定によりJPG/PNGも）保存され、閉じます。</li>
+                    <li>自動的に次の画像が開きます。</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <!-- 機能詳細（折りたたみ） -->
+    <section>
+        <h2>3. 機能詳細</h2>
+        
+        <details>
+            <summary>3.1 カット番号設定</summary>
+            <div class="details-content">
+                <ul>
+                    <li><strong>桁数</strong>: 3桁または4桁を選択。</li>
+                    <li><strong>次番号</strong>: 次に配置される番号。手動書き換えも可能。</li>
+                    <li><strong>A-B分け</strong>: 同じカットで差分を作る場合（<code>001A</code>, <code>001B</code>...）に使用。
+                        <ul>
+                            <li>チェックを入れると数字が固定され、サブ文字（A, B...）が選べます。</li>
+                            <li><strong>自動進行</strong>: 配置するたびに B, C... と進みます。</li>
+                            <li><strong>解除時</strong>: チェックを外すと、自動的に数字が +1 されます。</li>
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+        </details>
+
+        <details>
+            <summary>3.2 背景・塗りつぶし</summary>
+            <div class="details-content">
+                <ul>
+                    <li><strong>塗りつぶし</strong>: ONにすると文字の下に白座布団（背景）を敷きます。</li>
+                    <li><strong>範囲拡張</strong>: 文字の周囲を何ピクセル白くするか指定します（0〜64px）。</li>
+                </ul>
+            </div>
+        </details>
+
+        <details>
+            <summary>3.3 テンプレート作成</summary>
+            <div class="details-content">
+                <p>用紙に合わせた設定を保存できます。</p>
+                <ol>
+                    <li><strong>「新規テンプレート作成」</strong>を開く。</li>
+                    <li><strong>位置サイズ (XYWH)</strong>: 絵コンテ1行目の記入欄の座標を指定。<br>
+                        <span class="note">※画像を開いて選択範囲を作り<strong>「選択範囲からXYWH読取」</strong>を押すと簡単に入力できます。</span>
+                    </li>
+                    <li>フォント、DPI、行数などを入力して<strong>「保存」</strong>。</li>
+                </ol>
+                <p>作成した設定は「テンプレート」プルダウンから選択・削除できます。</p>
+            </div>
+        </details>
+
+        <details>
+            <summary>3.4 追加出力（JPG/PNG）</summary>
+            <div class="details-content">
+                <p>PSD保存と同時に、軽量な確認用画像も書き出せます。</p>
+                <ul>
+                    <li><strong>「追加出力」</strong>をONにし、形式（JPG / PNG）を選択。</li>
+                    <li>保存時、PSDと同じ場所に書き出されます。</li>
+                </ul>
+            </div>
+        </details>
+
+        <details>
+            <summary>3.5 履歴・戻る</summary>
+            <div class="details-content">
+                <p><strong>「戻る」</strong>ボタンで、直前に処理したPSDファイルを開き直して修正できます。</p>
+                <ul>
+                    <li>修正して「次へ」を押すと上書き保存されます。</li>
+                    <li>最新の画像まで進むと、通常のキュー処理に戻ります。</li>
+                </ul>
+            </div>
+        </details>
+
+        <details>
+            <summary>3.6 フォーカスインジケータ</summary>
+            <div class="details-content">
+                <p>パネル最上部の<strong>小さな円</strong>は、キーボード操作の有効状態を示します。</p>
+                <ul>
+                    <li><strong>点灯（色付き）</strong>: キーボードショートカットが有効。</li>
+                    <li><strong>消灯（薄い色）</strong>: フォーカスが外れています。</li>
+                </ul>
+                <p class="note">ショートカットが効かない時は、この円をクリックしてパネルにフォーカスを戻してください。</p>
+            </div>
+        </details>
+
+        <details>
+            <summary>3.7 設定リセット</summary>
+            <div class="details-content">
+                <p>パネル上の<strong>「リセット」</strong>ボタンを押すと、設定や読み込み状態がすべて<strong>起動直後の状態（初期状態）</strong>に戻ります。</p>
+                <p class="note">動作がおかしい場合や、最初から作業をやり直したい時に使用してください。</p>
+            </div>
+        </details>
+    </section>
+
+    <!-- ショートカット -->
+    <section>
+        <h2>4. ショートカットキー</h2>
+        <div class="card">
+            <p style="margin-top:0; font-size:0.9rem;">パネルにフォーカスがある時（インジケータ点灯時）に有効です。</p>
+            <table class="shortcut-table">
+                <tr>
+                    <th><kbd>1</kbd> 〜 <kbd>9</kbd></th>
+                    <td>指定行に配置（テンキー可）</td>
+                </tr>
+                <tr>
+                    <th><kbd>Enter</kbd></th>
+                    <td>次へ（保存して開く）</td>
+                </tr>
+            </table>
+            <span class="note">※ 数値入力中などは誤操作防止のため無効になります。</span>
+        </div>
+    </section>
+
+    <footer>
+        CutMark Ver 1.2.0 | Copyright (c) 2025 stechdrive
+    </footer>
+
+</div>
+
+</body>
+</html>

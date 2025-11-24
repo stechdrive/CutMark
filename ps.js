@@ -92,6 +92,7 @@ function safeDocId() {
 /** 1操作=1履歴のモーダルラッパ（opts 追加・後方互換） */
 function withModal(name, fn, opts) {
   var o = Object.assign({ commandName: name }, opts || {});
+  if (typeof o.timeOut !== "number" || o.timeOut <= 0) o.timeOut = 120000; // [MOD] ハング防止の既定タイムアウト
   return core.executeAsModal(fn, o);
 }
 
@@ -402,7 +403,7 @@ async function getLayerBoundsNoFX(layerId) {
   }], { synchronousExecution: true });
 
   var b = r[0] && (r[0].boundsNoEffects || r[0].bounds);
-  if (!b) throw new Error("boundsを取得できません");
+  if (!b) throw new Error("レイヤーの範囲情報を取得できませんでした");
 
   var out = {
     left: Math.round(b.left._value),
@@ -413,7 +414,7 @@ async function getLayerBoundsNoFX(layerId) {
     height: Math.round(b.bottom._value - b.top._value)
   };
   if (out.width <= 0 || out.height <= 0) {
-    throw new Error("テキストのboundsが無効です（幅/高さが 0）。フォント/サイズ/改行を確認してください。");
+    throw new Error("テキストのサイズが無効(0px)です。フォントサイズや改行を確認してください。");
   }
   return out;
 }
@@ -442,7 +443,7 @@ async function makeWhiteUnderTextBounds(layerId, paddingPx, colorRGB) {
   if (isNaN(pad) || pad < 0) pad = 0;
 
   if (b.width <= 0 || b.height <= 0) {
-    throw new Error("背景矩形を作成できません（テキストのboundsが無効）。");
+    throw new Error("背景矩形を作成できません（テキストの範囲情報が無効）。");
   }
 
   var left = Math.floor(b.left - pad);
@@ -521,7 +522,7 @@ async function makeWhiteUnderTextBounds(layerId, paddingPx, colorRGB) {
   }
 
   debugLog("bg-make/done", JSON.stringify({ newId: newId, ms: (Date.now() - t0) }));
-  if (!newId) throw new Error("背景レイヤーの生成に失敗しました（ID取得不可）。");
+  if (!newId) throw new Error("背景レイヤーの生成に失敗しました。");
 
   return newId; // ← ID を返す
 }
@@ -602,11 +603,11 @@ async function getSelectionBounds() {
     left = toNum(b.left); top = toNum(b.top);
     right = toNum(b.right); bottom = toNum(b.bottom);
   } else {
-    throw new Error("選択 bounds の形式を解釈できません。");
+    throw new Error("選択範囲の情報を正しく読み取れませんでした。");
   }
 
   if ([left, top, right, bottom].some(v => v == null || !isFinite(v))) {
-    throw new Error("選択 bounds が無効です。");
+    throw new Error("選択範囲の情報が無効です。");
   }
   return { left, top, right, bottom };
 }
@@ -614,6 +615,9 @@ async function getSelectionBounds() {
 /**
  * 任意 bounds の白矩形（contentLayer）を生成し、新規レイヤー ID を返す。
  * 既定は 100% 不透明。`name` は省略可。
+ * 注意：過去に「resultLayerId が返らず targetEnum にフォールバックしないと既存レイヤーを誤操作する」
+ *       という事例が発生した（NOTES 1.24）。ここで必ず ID を補足し、取れなければ明示エラーにする。
+ *       背景生成は配置の根幹なので、レビューで削除しないよう [MOD] コメントを残す。
  */
 async function makeWhiteRect(bounds, colorRGB, opacity, name) {
   var col = (colorRGB && colorRGB.length >= 3) ? colorRGB : [255, 255, 255];
@@ -646,7 +650,8 @@ async function makeWhiteRect(bounds, colorRGB, opacity, name) {
     newId = r0.resultLayerId || r0.layerID || r0.layerId || null;
   } catch (_) { }
 
-  // フォールバック：targetEnum から取得
+  // [MOD] フォールバック：targetEnum から取得（UXP 環境で resultLayerId が欠損する事例に対応）
+  //       → ここを削ると過去に「背景が作られず既存レイヤーを動かす」デグレが再発したため、必須。
   if (!newId) {
     try {
       const r2 = await action.batchPlay([{
@@ -658,7 +663,7 @@ async function makeWhiteRect(bounds, colorRGB, opacity, name) {
       newId = g0.layerID || g0.layerId || null;
     } catch (_) { }
   }
-  if (!newId) throw new Error("背景レイヤーの生成に失敗しました（ID取得不可）。");
+  if (!newId) throw new Error("背景レイヤーの生成に失敗しました。");
 
   // 2) 不透明度の設定（必要な場合のみ）
   if (op !== 100) {
@@ -687,7 +692,7 @@ async function saveDocumentAsExtraRaster(outFileEntry, format, jpegQualityRaw) {
 
   const fmt = (typeof format === "string") ? format.toLowerCase() : "";
   if (fmt !== "jpg" && fmt !== "jpeg" && fmt !== "png") {
-    throw new Error("対応していない追加出力形式です: " + format);
+    throw new Error("指定された形式(JPG/PNG)以外は保存できません。");
   }
 
   // JPEG の quality は 0..12 スケール。UI 要件「80」に合わせて既定値 10 を使用する。
@@ -728,7 +733,7 @@ async function saveActiveDocAsPSD(outFileEntry) {
   debugLog("saveActiveDocAsPSD/start", handleDesc);
 
   const doc = app.activeDocument;
-  if (!doc) throw new Error("保存対象のアクティブなドキュメントが見つかりません。");
+  if (!doc) throw new Error("保存するドキュメントが開かれていません。");
 
   const saveOptions = {
     layers: true,
@@ -754,7 +759,7 @@ async function saveAndCloseActiveDocAsPSD(outFileEntry) {
   debugLog("saveAndCloseActiveDocAsPSD/start", handleDesc);
 
   const doc = app.activeDocument;
-  if (!doc) throw new Error("保存対象のアクティブなドキュメントが見つかりません。");
+  if (!doc) throw new Error("保存するドキュメントが開かれていません。");
 
   const saveOptions = {
     layers: true,
@@ -851,7 +856,7 @@ async function saveAndCloseActiveDocAsPSDWithExtra(options) {
   });
 
   const doc = app.activeDocument;
-  if (!doc) throw new Error("保存対象のアクティブなドキュメントが見つかりません。");
+  if (!doc) throw new Error("保存するドキュメントが開かれていません。");
 
   const psdSaveOptions = {
     layers: true,

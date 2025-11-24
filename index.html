@@ -5,12 +5,14 @@
   Released under the MIT license
 -->
 <html lang="ja">
+
 <head>
   <meta charset="utf-8" />
   <title>CutMark CenterBox</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body tabindex="0"><!-- キーボードフォーカス付与（panel内ショートカット用） -->
+
+<body tabindex="-1"><!-- キーボードフォーカス付与（panel内ショートカット用） -->
 
   <!--
     SWC（Spectrum Web Components）による折りたたみ対応。
@@ -18,13 +20,13 @@
     ※ SWC のバンドルがない環境でも未知要素として子要素は表示され、操作不能にならない。
   -->
   <sp-theme id="spectrumTheme" scale="medium">
-<!-- === CutMark: Top bar with Focus Indicator (no visible text) === -->
-<div id="cmTopBar" role="presentation" aria-hidden="false">
-  <!-- 小さな円形インジケータ（テキストやラベルは出さない / アクセシビリティ上のラベルのみ） -->
-  <div id="cmFocusDot" tabindex="-1" role="button" aria-label="パネルのキーボードフォーカス状態（非フォーカス時にクリックで復帰）"></div>
-</div>
+    <!-- === CutMark: Top bar with Focus Indicator (no visible text) === -->
+    <div id="cmTopBar" role="presentation" aria-hidden="false">
+      <!-- 小さな円形インジケータ（テキストやラベルは出さない / アクセシビリティ上のラベルのみ） -->
+      <div id="cmFocusDot" tabindex="-1" role="button" aria-label="パネルのキーボードフォーカス状態（非フォーカス時にクリックで復帰）"></div>
+    </div>
     <div id="scrollRoot"><!-- スクロールの親コンテナ（styles.cssで height/overflow を付与） -->
-     
+
       <sp-accordion id="accordion" allow-multiple>
 
         <sp-accordion-item id="statusSec" label="ステータス" open>
@@ -34,7 +36,7 @@
           </section>
         </sp-accordion-item>
 
-        <sp-accordion-item id="place" label="カット番号記入" open>
+        <sp-accordion-item id="place" label="カット番号" open>
           <section class="section">
 
             <div class="row">
@@ -56,12 +58,12 @@
               </div>
             </div>
 
-              <div class="pair">
-                <label for="bgEnabled">塗りつぶし：</label>
-                <input type="checkbox" id="bgEnabled" />
-                <label for="bgPad">範囲拡張(px)：</label>
-                <input type="number" id="bgPad" value="4" min="0" max="64" step="1" />
-              </div>
+            <div class="pair">
+              <label for="bgEnabled">塗りつぶし：</label>
+              <input type="checkbox" id="bgEnabled" />
+              <label for="bgPad">範囲拡張(px)：</label>
+              <input type="number" id="bgPad" value="4" min="0" max="64" step="1" />
+            </div>
 
             <div class="row">
               <div class="pair">
@@ -72,11 +74,31 @@
                 <label for="subSelect" class="muted">サブ文字:</label>
                 <select id="subSelect" disabled>
                   <option value="" selected>−</option>
-                  <option>A</option><option>B</option><option>C</option><option>D</option><option>E</option>
-                  <option>F</option><option>G</option><option>H</option><option>I</option><option>J</option>
-                  <option>K</option><option>L</option><option>M</option><option>N</option><option>O</option>
-                  <option>P</option><option>Q</option><option>R</option><option>S</option><option>T</option>
-                  <option>U</option><option>V</option><option>W</option><option>X</option><option>Y</option>
+                  <option>A</option>
+                  <option>B</option>
+                  <option>C</option>
+                  <option>D</option>
+                  <option>E</option>
+                  <option>F</option>
+                  <option>G</option>
+                  <option>H</option>
+                  <option>I</option>
+                  <option>J</option>
+                  <option>K</option>
+                  <option>L</option>
+                  <option>M</option>
+                  <option>N</option>
+                  <option>O</option>
+                  <option>P</option>
+                  <option>Q</option>
+                  <option>R</option>
+                  <option>S</option>
+                  <option>T</option>
+                  <option>U</option>
+                  <option>V</option>
+                  <option>W</option>
+                  <option>X</option>
+                  <option>Y</option>
                   <option>Z</option>
                 </select>
               </div>
@@ -89,16 +111,13 @@
             </div>
 
             <div class="row">
-              <div class="pair">
-                <button id="queueStart">処理開始</button>
-                <button id="backBtn">戻る</button>
-                <button id="openNext">保存して次へ</button>
-              </div>
+              <button id="backBtn">戻る</button>
+              <button id="openNext">次へ</button>
             </div>
           </section>
         </sp-accordion-item>
 
-        <sp-accordion-item id="io" label="絵コンテ読み込み" open>
+        <sp-accordion-item id="io" label="ファイル" open>
           <section class="section">
             <div class="row">
               <div class="pair">
@@ -107,7 +126,6 @@
               </div>
               <div class="pair">
                 <button id="setOutFolder">出力先設定</button>
-                <button id="clearOutFolder">出力先クリア</button>
               </div>
             </div>
             <div class="row">
@@ -124,19 +142,19 @@
               </div>
             </div>
             <div class="row">
-              <div id="outFolderLabel" class="muted">未設定</div>
+              <div id="outFolderLabel" class="muted">出力先：（未設定）</div>
             </div>
           </section>
         </sp-accordion-item>
 
-        <sp-accordion-item id="tpl" label="使用テンプレート選択">
+        <sp-accordion-item id="tpl" label="テンプレート">
           <section class="section">
 
             <!-- 使用テンプレ選択 -->
             <div class="row">
               <label for="tplSelect">使用テンプレ：</label>
               <select id="tplSelect"></select>
-              <button id="deleteTplBtn" title="選択中のテンプレートを削除">削除</button>
+              <button id="tplDelete" title="選択中のテンプレートを削除">削除</button>
 
             </div>
 
@@ -161,26 +179,36 @@
                     </div>
                   </div>
 
-                  <div class="row">
+                  <div class="row row-compact font-picker-row">
                     <div class="pair">
-                      <label for="tplFontSel">フォント：</label>
-                      <select id="tplFontSel">  <!-- 既定フォント（未選択時のフェイルセーフ）。Lazy列挙後に上書きされます -->
-                      <option value="Arial-Black" selected>Arial-Black (default)</option>
-                    </select>
+                      <label>フォント：</label>
+                      <span id="tplFontDisplay" class="font-display">Arial-Black</span>
+                      <!-- 値保持用（非表示） -->
+                      <select id="tplFontSel" class="visually-hidden" hidden aria-hidden="true">
+                        <!-- 既定フォント（未選択時のフェイルセーフ）。Lazy列挙後に上書きされます -->
+                        <option value="Arial-Black" selected>Arial-Black</option>
+                      </select>
+                    </div>
+                    <div class="pair">
+                      <label for="tplFontSizePt">サイズ：</label>
+                      <select id="tplFontSizePreset" title="プリセット">
+                        <option value="12" selected>12pt</option>
+                        <option value="14">14pt</option>
+                        <option value="16">16pt</option>
+                        <option value="18">18pt</option>
+                        <option value="24">24pt</option>
+                      </select>
+                      <input type="number" id="tplFontSizePt" value="12" min="8" max="50" step="1" />
                     </div>
                   </div>
 
-                  <div class="row">
-                    <label for="tplFontSizePt">サイズ：</label>
-                    <select id="tplFontSizePreset" title="プリセット">
-                      <option value="12" selected>12pt</option>
-                      <option value="14">14pt</option>
-                      <option value="16">16pt</option>
-                      <option value="18">18pt</option>
-                      <option value="24">24pt</option>
-                    </select>
-                    <input type="number" id="tplFontSizePt" value="12" min="8" max="50" step="1" />
-</div>
+                  <sp-accordion-item id="fontChooserItem" label="フォント選択">
+                    <section class="section font-chooser">
+                      <div class="font-chooser-body">
+                        <ul id="fontList" class="font-list"></ul>
+                      </div>
+                    </section>
+                  </sp-accordion-item>
 
                   <!-- ★ 1コマ目：XYWH を fieldset でまとめる -->
                   <fieldset class="xywh">
@@ -225,12 +253,9 @@
                     </div>
                   </div>
 
-                  <div class="row">
+                  <div class="row row-compact">
                     <button id="readBoundsFromSelection">選択範囲からXYWH読取</button>
-                  </div>
-
-                  <div class="row">
-                    <button id="tplCreate">テンプレ作成</button>
+                    <button id="tplCreate">保存</button>
                   </div>
                 </div>
               </sp-accordion-item>
@@ -246,4 +271,5 @@
   <script src="vendor/swc-bundle.js"></script>
   <script src="main.js"></script>
 </body>
+
 </html>

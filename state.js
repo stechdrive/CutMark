@@ -35,6 +35,7 @@ const state = {
   nextBase: 1,          // 次に置くベース番号（1以上）
   sub: "",              // サブ文字（"" or A..Z）
   autoClearSub: true,   // （互換保持）
+  subPlacedSinceSubOn: false, // [MOD] サブON中に配置が行われたか
 
   // 走査は行わないが、互換のため保持（未使用）
   usedLabels: new Set(),
@@ -72,6 +73,7 @@ function _resetAllToDefaults() {
   state.nextBase = 1;
   state.sub = "";
   state.autoClearSub = true;
+  state.subPlacedSinceSubOn = false;
   state.usedLabels = new Set();
   state.maxPlacedBase = 0;
   state.bg = { enabled: false, padding: 4, color: [255, 255, 255] };
@@ -163,6 +165,15 @@ function normalizeTemplatesJson(json) {
     const w = pos(p.cutBox && p.cutBox.w, 0);
     const h = pos(p.cutBox && p.cutBox.h, 0);
 
+    let pad = {
+      top: int(p.boxPadding && p.boxPadding.top, 12),
+      right: int(p.boxPadding && p.boxPadding.right, 6),
+      bottom: int(p.boxPadding && p.boxPadding.bottom, 8),
+      left: int(p.boxPadding && p.boxPadding.left, 6)
+    };
+
+    pad = sanitizeBoxPadding({ w, h }, pad);
+
     out.presets.push({
       id: String(p.id || ""),
       label: String(p.label || p.id || "unnamed"),
@@ -174,12 +185,7 @@ function normalizeTemplatesJson(json) {
         w, h, rows
       },
 
-      boxPadding: {
-        top: int(p.boxPadding && p.boxPadding.top, 12),
-        right: int(p.boxPadding && p.boxPadding.right, 6),
-        bottom: int(p.boxPadding && p.boxPadding.bottom, 8),
-        left: int(p.boxPadding && p.boxPadding.left, 6)
-      },
+      boxPadding: pad,
 
       text: {
         fontPSName: (p.text && p.text.fontPSName) || "Arial-Black",
@@ -207,6 +213,90 @@ function normalizeTemplatesJson(json) {
     });
   }
   return out;
+}
+
+/**
+ * boxPadding を安全値へクランプする
+ * - 負値を 0 に丸め、内側幅/高さが 1px 未満にならないよう縮める
+ * - cutBox.w/h が 1 以下のときは余白をすべて 0 にする
+ * @param {{w:number,h:number}} cutBox
+ * @param {{top:number,right:number,bottom:number,left:number}} padding
+ * @returns {{top:number,right:number,bottom:number,left:number}}
+ */
+function sanitizeBoxPadding(cutBox, padding) {
+  function int(v, def) { v = Number(v); return (isFinite(v) ? Math.round(v) : def); }
+  let w = int(cutBox && cutBox.w, 0);
+  let h = int(cutBox && cutBox.h, 0);
+  let top = Math.max(0, int(padding && padding.top, 0));
+  let right = Math.max(0, int(padding && padding.right, 0));
+  let bottom = Math.max(0, int(padding && padding.bottom, 0));
+  let left = Math.max(0, int(padding && padding.left, 0));
+
+  if (w <= 1) { left = 0; right = 0; }
+  if (h <= 1) { top = 0; bottom = 0; }
+
+  function clampW() {
+    let innerW = w - (left + right);
+    if (innerW >= 1) return;
+    const deficit = 1 - innerW;
+    let reduceL = Math.min(left, Math.floor(deficit / 2));
+    let reduceR = Math.min(right, deficit - reduceL);
+    left -= reduceL;
+    right -= reduceR;
+    innerW = w - (left + right);
+    if (innerW < 1) {
+      const need = 1 - innerW;
+      const moreL = Math.min(left, need);
+      left -= moreL;
+      innerW = w - (left + right);
+      if (innerW < 1) {
+        const needR = 1 - innerW;
+        right = Math.max(0, right - needR);
+      }
+    }
+    if (w - (left + right) < 1) {
+      if (w <= 1) { left = 0; right = 0; }
+      else {
+        const cap = w - 1;
+        left = Math.min(left, cap);
+        right = Math.min(right, cap - left);
+      }
+    }
+  }
+
+  function clampH() {
+    let innerH = h - (top + bottom);
+    if (innerH >= 1) return;
+    const deficit = 1 - innerH;
+    let reduceT = Math.min(top, Math.floor(deficit / 2));
+    let reduceB = Math.min(bottom, deficit - reduceT);
+    top -= reduceT;
+    bottom -= reduceB;
+    innerH = h - (top + bottom);
+    if (innerH < 1) {
+      const need = 1 - innerH;
+      const moreT = Math.min(top, need);
+      top -= moreT;
+      innerH = h - (top + bottom);
+      if (innerH < 1) {
+        const needB = 1 - innerH;
+        bottom = Math.max(0, bottom - needB);
+      }
+    }
+    if (h - (top + bottom) < 1) {
+      if (h <= 1) { top = 0; bottom = 0; }
+      else {
+        const cap = h - 1;
+        top = Math.min(top, cap);
+        bottom = Math.min(bottom, cap - top);
+      }
+    }
+  }
+
+  if (w > 1) clampW();
+  if (h > 1) clampH();
+
+  return { top, right, bottom, left };
 }
 
 /** 列挙・検索・アクティブ */
@@ -373,6 +463,15 @@ async function createTemplateFromInputs(o) {
   // 継承（既定はアクティブテンプレ）＋オーバーライド
   const base = (o && o.inheritFromActive === false) ? null : getActiveTemplate();
 
+  const basePad = base ? Object.assign({}, base.boxPadding) :
+    { top: 12, right: 6, bottom: 8, left: 6 };
+  const rawPad = {
+    top: int(o.boxPadding && o.boxPadding.top, basePad.top),
+    right: int(o.boxPadding && o.boxPadding.right, basePad.right),
+    bottom: int(o.boxPadding && o.boxPadding.bottom, basePad.bottom),
+    left: int(o.boxPadding && o.boxPadding.left, basePad.left)
+  };
+
   const preset = {
     id: makeUniqueIdFromLabel(name),
     label: name,
@@ -380,8 +479,7 @@ async function createTemplateFromInputs(o) {
 
     cutBox: { x: cx, y: cy, w: cw, h: ch, rows: rows },
 
-    boxPadding: base ? Object.assign({}, base.boxPadding) :
-      { top: 12, right: 6, bottom: 8, left: 6 },
+    boxPadding: sanitizeBoxPadding({ w: cw, h: ch }, rawPad),
 
     text: (function () {
       const t = base ? Object.assign({}, base.text) : {
@@ -409,6 +507,7 @@ async function createTemplateFromInputs(o) {
  * 採番ユーティリティ（重複はユーザー責任）
  * ==========================================================================*/
 
+function maxForDigits(d) { return (d === 4) ? 9999 : 999; }
 /** 0埋め */
 function pad(n, d) { return String(n).padStart(d, "0"); }
 /** ラベル生成（次番号+サブ） */
@@ -418,6 +517,41 @@ function floorBase() { return 1; }
 /** 1以上のみ検証（重複や履歴には依存しない） */
 function validateBaseInput(n) {
   if (n < 1) throw new Error("次番号は 1 以上を指定してください");
+}
+
+/** サブモード開始（フラグ初期化） */
+function beginSubMode() {
+  state.subPlacedSinceSubOn = false;
+}
+
+/** サブ付き配置完了時にフラグをセット */
+function markSubPlacement() {
+  state.subPlacedSinceSubOn = true;
+}
+
+/**
+ * サブモード終了時の番号確定
+ * - on=true: 状態を変えず返却
+ * - on=false かつサブ配置済み: 次番号を +1（桁上限内）
+ * - on=false: サブ文字はクリア
+ */
+function finalizeSubMode(on, currentNextBase, currentSub) {
+  const res = { nextBase: currentNextBase, subChar: currentSub, advanced: false, hitMax: false };
+  if (!on) {
+    if (state.subPlacedSinceSubOn) {
+      const max = maxForDigits(state.digits);
+      res.advanced = true;
+      if (currentNextBase >= max) {
+        res.nextBase = max;
+        res.hitMax = true;
+      } else {
+        res.nextBase = currentNextBase + 1;
+      }
+    }
+    res.subChar = "";
+    state.subPlacedSinceSubOn = false;
+  }
+  return res;
 }
 
 /** 途中再開時のスキャンは行わない（no-op） */
@@ -484,6 +618,113 @@ function nextPendingIndex(from) {
     if (state.session.queue[i].state === "pending") return i;
   }
   return -1;
+}
+
+/**
+ * 永続トークンが有効なフォルダを指すか検証して返す（無効なら null）
+ */
+async function getUsableOutputFolderFromToken(token) {
+  if (!token) return null;
+  try {
+    const e = await entryFromToken(token);
+    if (e && (e.isFolder || typeof e.getEntries === "function" || typeof e.createFile === "function")) {
+      return e;
+    }
+  } catch (_) { }
+  return null;
+}
+
+/**
+ * 出力先用フォルダへの書き込み権限を要求するヘルパー。
+ * - requestPermission が無い場合（旧 Entry）でも動作を止めない。
+ */
+async function requestReadWriteIfNeeded(entry) {
+  if (!entry || typeof entry.requestPermission !== "function") return true;
+  try {
+    const res = await entry.requestPermission({ mode: "readwrite" });
+    return res === "granted";
+  } catch (e) {
+    console.warn("[CutMark] requestPermission(readwrite) failed:", e);
+    return false;
+  }
+}
+
+/**
+ * 指定フォルダ直下に output フォルダを用意し、永続トークンを返す。
+ * - 既に存在する場合は getEntry で再利用し、重複作成エラーを避ける。
+ * - baseFolderEntry が無効な場合は null を返す。
+ * - opts.requestWrite = true のときは書き込み権限を事前要求する。
+ */
+async function prepareOutputFolderUnder(baseFolderEntry, opts) {
+  if (!baseFolderEntry || typeof baseFolderEntry.getEntry !== "function") return null;
+  const options = opts || {};
+  if (options.requestWrite) {
+    const granted = await requestReadWriteIfNeeded(baseFolderEntry);
+    if (!granted) return null;
+  }
+  try {
+    let outFolder = null;
+    try { outFolder = await baseFolderEntry.getEntry("output"); } catch (_) { outFolder = null; }
+    if (!outFolder) {
+      // 既存の同名フォルダがあるときの例外を避けるため、事前に存在確認を行う
+      outFolder = await baseFolderEntry.createFolder("output");
+    }
+    const token = await fsmod.createPersistentToken(outFolder);
+    return { folder: outFolder, token: token };
+  } catch (e) {
+    console.warn("[CutMark] failed to prepare output folder:", e);
+    return null;
+  }
+}
+
+/**
+ * 現在のキューのジョブから出力先を決定し、必要なら output/ を生成する。
+ * - outputFolderToken が既に有効ならそれを再利用
+ * - srcDirToken（フォルダ追加経由）があれば優先的に使用
+ * - 無い場合は入力ファイルの親フォルダ直下に output/ を生成
+ */
+async function resolveOutputFolderForCurrentJob() {
+  if (state.session.outputFolderToken) {
+    const reusable = await getUsableOutputFolderFromToken(state.session.outputFolderToken);
+    if (reusable) return reusable;
+  }
+
+  const idx = state.session.cursor;
+  const job = state.session.queue[idx];
+  if (!job || !job.token) throw new Error("出力先が未設定で、現在ジョブも特定できません。");
+
+  // 1) フォルダ追加経由の srcDirToken を優先
+  if (job.srcDirToken) {
+    try {
+      const dir = await entryFromToken(job.srcDirToken);
+      if (dir && (dir.isFolder || typeof dir.getEntries === "function")) {
+        const prepared = await prepareOutputFolderUnder(dir);
+        if (prepared && prepared.folder && prepared.token) {
+          state.session.outputFolderToken = prepared.token;
+          persist();
+          return prepared.folder;
+        }
+      }
+    } catch (_) { /* fallthrough */ }
+  }
+
+  // 2) 入力ファイルの親フォルダを使う
+  const srcEntry = await entryFromToken(job.token);
+  let parent = null;
+  try {
+    if (srcEntry && typeof srcEntry.getParent === "function") parent = await srcEntry.getParent();
+    else if (srcEntry && srcEntry.parent) parent = srcEntry.parent;
+  } catch (_) { parent = null; }
+  if (!parent || !(parent.isFolder || typeof parent.getEntries === "function")) {
+    throw new Error("出力先フォルダが未設定です。『出力先選択』ボタンで指定してください。");
+  }
+  const prepared = await prepareOutputFolderUnder(parent);
+  if (!prepared || !prepared.folder || !prepared.token) {
+    throw new Error("出力先フォルダの作成に失敗しました。別のフォルダを選択してください。");
+  }
+  state.session.outputFolderToken = prepared.token;
+  persist();
+  return prepared.folder;
 }
 
 /* ============================================================================
@@ -576,16 +817,6 @@ async function deleteTemplateById(id) {
       // 3-b) 内蔵デフォルトを「既定（アクティブ）」として選択
       try { setActiveTemplate(fallback.id); } catch (_) { }
 
-      // 3-c) 同時に「ユーザー側 JSON にも復元（複製）」する
-      try {
-        const clone = Object.assign({}, fallback);
-        clone.id = makeUniqueIdFromLabel(fallback.label || fallback.id || "preset");
-        clone.label = String(fallback.label || fallback.id || "preset") + "（復元）";
-        const normalized = normalizeTemplatesJson({ version: 2, presets: [clone] }).presets[0];
-        userTemplates.presets.push(normalized);
-        await saveUserTemplates();
-      } catch (_) { }
-
       report.activeChanged = true;
       report.restoredDefault = true;
       report.newActiveId = fallback.id;
@@ -626,6 +857,9 @@ module.exports = {
   labelOf,
   floorBase,
   validateBaseInput,
+  beginSubMode,
+  markSubPlacement,
+  finalizeSubMode,
 
   // ジョブ
   ALLOWED_EXT,
@@ -634,5 +868,11 @@ module.exports = {
   entryFromToken,
   enqueueFileEntry,
   normalizeDstRel,
-  nextPendingIndex
+  nextPendingIndex,
+
+  // 出力先解決
+  getUsableOutputFolderFromToken,
+  requestReadWriteIfNeeded,
+  prepareOutputFolderUnder,
+  resolveOutputFolderForCurrentJob
 };

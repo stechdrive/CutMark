@@ -8,7 +8,7 @@
 /**
  * ui.js — パネルのアプリロジック（入出力・配置・保存・テンプレ作成）
  * ---------------------------------------------------------------------------
- * - 「フォルダ/ファイル追加 → 処理開始 → 保存して次へ」フロー
+ * - 「フォルダ/ファイル追加 → 処理開始 → 次へ」フロー
  * - 出力先の永続トークン管理・自動復旧・現在値の可視化
  * - DOM優先：ポイントテキスト生成→段落中央→ “上端合わせ + 水平中央合わせ”
  *   （仕上げの白フチ／背景は AM、ps.js 側）
@@ -16,7 +16,7 @@
  * ★この版の要点（SWC移行＋パフォーマンス改善＋履歴ナビ強化）：
  * - 新規テンプレ作成フォームを <sp-accordion-item id="tplCreateItem"> に移行（既存）
  * - フォント列挙は「ドロップダウン初回操作時」に**一度だけ**（既存）
- * - ★履歴ナビ（queue/historyモード）を追加：戻る/保存して次への期待値に整合
+ * - ★履歴ナビ（queue/historyモード）を追加：戻る/次への期待値に整合
  *   - viewMode/historyIndex/activePSDToken を ui.js 内で揮発管理（永続スキーマは不変）
  *   - 履歴PSDは Document.save() を優先、失敗時は token 経由で saveAs.psd
  */
@@ -39,7 +39,15 @@ function __cm_isDebug() {
   } catch (_) { }
   return false;
 }
-try { if (typeof window !== "undefined") window.CM_DEBUG = __cm_isDebug(); } catch (_) { }
+try {
+  if (typeof window !== "undefined") {
+    window.CM_DEBUG = __cm_isDebug();
+    window.__cm_isDebug = __cm_isDebug; // デバッグ確認用に公開
+  }
+} catch (_) { }
+
+// Debug gate（console.time などで再利用）
+function isDebugLogEnabled() { return __cm_isDebug(); }
 
 /* ============================================================================
  * Imports
@@ -50,14 +58,18 @@ const fsmod = require("uxp").storage.localFileSystem;
 const PS3 = require("./ps.js");
 const TPL = require("./template.js");
 const {
-  state, pad, labelOf, floorBase, validateBaseInput, persist, restore,
+  state, pad, labelOf, floorBase, validateBaseInput, beginSubMode, markSubPlacement, finalizeSubMode, persist, restore,
   loadTemplatesAndSelectActive, listAllPresets, getActiveTemplate, setActiveTemplate,
   // 互換（旧UI）：createTemplateFromSelection
   createTemplateFromSelection,
   // 新UI
   createTemplateFromInputs,
   ALLOWED_EXT, extOfName, tokenOf, entryFromToken, enqueueFileEntry, normalizeDstRel, nextPendingIndex,
-  deleteTemplateById
+  deleteTemplateById,
+  getUsableOutputFolderFromToken,
+  requestReadWriteIfNeeded: requestReadWriteIfNeededState,
+  prepareOutputFolderUnder: prepareOutputFolderUnderState,
+  resolveOutputFolderForCurrentJob: resolveOutputFolderForCurrentJobState
 } = require("./state.js");
 
 /* ============================================================================
@@ -67,7 +79,8 @@ const {
  * ========================================================================== */
 const _TPL_DIRTY_IDS = new Set([
   "tplName", "tplRows", "tplDpi", "tplFontSel", "tplFontSizePreset", "tplFontSizePt",
-  "tplX", "tplY", "tplW", "tplH"
+  "tplX", "tplY", "tplW", "tplH",
+  "tplPadTop", "tplPadRight", "tplPadBottom", "tplPadLeft"
 ]);
 let _tplDirty = Object.create(null);
 function markTplDirty(id) {
@@ -118,11 +131,9 @@ function getTplFontPSNameOrDefault() {
         let label = want;
         try {
           if (typeof _fontLabelByPSName !== "undefined" && _fontLabelByPSName && _fontLabelByPSName.get) {
-            label = _fontLabelByPSName.get(want) || (want + " (default)");
-          } else {
-            label = want + " (default)";
+            label = _fontLabelByPSName.get(want) || want;
           }
-        } catch (_) { label = want + " (default)"; }
+        } catch (_) { label = want; }
         o.textContent = label;
         sel.appendChild(o);
       }
@@ -130,6 +141,97 @@ function getTplFontPSNameOrDefault() {
     } catch (_) { }
     return want;
   } catch (_) { return "Arial-Black"; }
+}
+
+/**
+ * 単一プレビューを更新（選択フォントを視覚確認する）
+ * - UXP の CSS は generic family 非対応のため、PostScript 名を第一候補に、フォールバックとしてホスト既定の継承に任せる
+ */
+function updateFontDisplayLabel(labelOverride, cssFamilyOverride) {
+  try {
+    const disp = document.getElementById("tplFontDisplay");
+    const sel = document.getElementById("tplFontSel");
+    if (!disp || !sel) return;
+    const val = sel.value || "Arial-Black";
+    let label = labelOverride || val;
+    try {
+      if (!labelOverride && _fontLabelByPSName && _fontLabelByPSName.get) {
+        label = _fontLabelByPSName.get(val) || val;
+      }
+    } catch (_) { }
+    disp.textContent = label;
+  } catch (_) { }
+}
+
+function ensureTplFontOption(value, label) {
+  try {
+    const sel = document.getElementById("tplFontSel");
+    if (!sel || !value) return;
+    const opts = sel.options ? Array.from(sel.options) : [];
+    const found = opts.find(o => o && o.value === value);
+    if (found) return;
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label || value;
+    sel.appendChild(o);
+  } catch (_) { }
+}
+
+async function renderFontList() {
+  const chooser = document.getElementById("fontChooserItem");
+  const listEl = document.getElementById("fontList");
+  if (!chooser || !listEl) return;
+  listEl.innerHTML = "";
+  const fonts = await listFonts();
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < fonts.length; i++) {
+    const f = fonts[i];
+    if (!f) continue;
+    const li = document.createElement("li");
+    li.dataset.value = f.value || "";
+    li.dataset.family = f.family || f.label || f.value || "";
+    li.appendChild(document.createTextNode(f.label || f.value || ""));
+    if ($("#tplFontSel") && $("#tplFontSel").value === f.value) {
+      li.classList.add("is-active");
+    }
+    frag.appendChild(li);
+  }
+  listEl.appendChild(frag);
+}
+
+function wireFontChooser() {
+  const chooser = document.getElementById("fontChooserItem");
+  const listEl = document.getElementById("fontList");
+  if (!chooser || !listEl) return;
+
+  const onToggle = function () {
+    const op = isAccordionOpen(chooser);
+    if (op) renderFontList();
+  };
+  chooser.addEventListener("sp-accordion-item-toggle", onToggle, { capture: false });
+  chooser.addEventListener("toggle", onToggle, { capture: false });
+
+  listEl.addEventListener("click", function (ev) {
+    let li = ev.target;
+    while (li && li.tagName !== "LI") { li = li.parentElement; }
+    if (!li || !li.dataset || !li.dataset.value) return;
+    const val = li.dataset.value;
+    const sel = document.getElementById("tplFontSel");
+    const labelText = String(li.textContent || val || "").trim();
+    if (sel) {
+      try {
+        ensureTplFontOption(val, labelText);
+        sel.value = val;
+      } catch (_) { }
+    }
+    // update active state
+    const actives = listEl.querySelectorAll(".is-active");
+    actives.forEach(n => n.classList.remove("is-active"));
+    li.classList.add("is-active");
+    updateFontDisplayLabel(labelText);
+    markTplDirty("tplFontSel");
+    updateTplCreateEnabled();
+  });
 }
 
 
@@ -155,7 +257,7 @@ function __visiblePresets(all) {
 /** 削除ボタンの活性状態を更新 */
 function updateTemplateDeleteEnabled() {
   try {
-    const btn = document.getElementById("tplDelete") || document.getElementById("deleteTplBtn");
+    const btn = document.getElementById("tplDelete");
     if (!btn) return;
     const sel = document.getElementById("tplSelect");
     const all = __visiblePresets(listAllPresets());
@@ -253,6 +355,109 @@ function bindDiagnostics() {
 
 /** 整数化＋範囲クリップ */
 function toInt(v) { const n = Number(v); return (isFinite(n) ? Math.round(n) : null); }
+
+/**
+ * テンプレ余白のバリデーション
+ * - 負値は 0 へ丸める
+ * - 内側幅/高さが 1px 未満にならないよう余白を縮める
+ * - W/H 自体が 1 以下なら余白はすべて 0 にする
+ * @param {{silent?: boolean}=} opts silent=true のときトーストを出さない
+ * @returns {boolean} 何らかの値を調整した場合 true
+ */
+function validateTplPadding(opts) {
+  const silent = opts && opts.silent;
+  const wEl = $("#tplW"), hEl = $("#tplH");
+  const lEl = $("#tplPadLeft"), rEl = $("#tplPadRight"), tEl = $("#tplPadTop"), bEl = $("#tplPadBottom");
+  if (!wEl || !hEl || !lEl || !rEl || !tEl || !bEl) return false;
+
+  let w = toInt(wEl.value); if (w == null || w < 0) w = 0;
+  let h = toInt(hEl.value); if (h == null || h < 0) h = 0;
+
+  let left = toInt(lEl.value); if (left == null || left < 0) left = 0;
+  let right = toInt(rEl.value); if (right == null || right < 0) right = 0;
+  let top = toInt(tEl.value); if (top == null || top < 0) top = 0;
+  let bottom = toInt(bEl.value); if (bottom == null || bottom < 0) bottom = 0;
+
+  let changed = false;
+
+  if (w <= 1) { left = 0; right = 0; changed = true; }
+  if (h <= 1) { top = 0; bottom = 0; changed = true; }
+
+  function clampWidth() {
+    let innerW = w - (left + right);
+    if (innerW >= 1) return;
+    const deficit = 1 - innerW;
+    let reduceLeft = Math.min(left, Math.floor(deficit / 2));
+    let reduceRight = Math.min(right, deficit - reduceLeft);
+    left -= reduceLeft;
+    right -= reduceRight;
+    innerW = w - (left + right);
+    if (innerW < 1) {
+      const need = 1 - innerW;
+      const moreLeft = Math.min(left, need);
+      left -= moreLeft;
+      innerW = w - (left + right);
+      if (innerW < 1) {
+        const needR = 1 - innerW;
+        right = Math.max(0, right - needR);
+      }
+    }
+    if (w - (left + right) < 1) {
+      if (w <= 1) { left = 0; right = 0; }
+      else {
+        const cap = w - 1;
+        left = Math.min(left, cap);
+        right = Math.min(right, cap - left);
+      }
+    }
+    changed = true;
+  }
+
+  function clampHeight() {
+    let innerH = h - (top + bottom);
+    if (innerH >= 1) return;
+    const deficit = 1 - innerH;
+    let reduceTop = Math.min(top, Math.floor(deficit / 2));
+    let reduceBottom = Math.min(bottom, deficit - reduceTop);
+    top -= reduceTop;
+    bottom -= reduceBottom;
+    innerH = h - (top + bottom);
+    if (innerH < 1) {
+      const need = 1 - innerH;
+      const moreTop = Math.min(top, need);
+      top -= moreTop;
+      innerH = h - (top + bottom);
+      if (innerH < 1) {
+        const needB = 1 - innerH;
+        bottom = Math.max(0, bottom - needB);
+      }
+    }
+    if (h - (top + bottom) < 1) {
+      if (h <= 1) { top = 0; bottom = 0; }
+      else {
+        const cap = h - 1;
+        top = Math.min(top, cap);
+        bottom = Math.min(bottom, cap - top);
+      }
+    }
+    changed = true;
+  }
+
+  if (w > 1) clampWidth();
+  if (h > 1) clampHeight();
+
+  function setIfDiff(el, val) {
+    const cur = toInt(el.value);
+    if (cur !== val) { el.value = String(val); changed = true; }
+  }
+  setIfDiff(lEl, left);
+  setIfDiff(rEl, right);
+  setIfDiff(tEl, top);
+  setIfDiff(bEl, bottom);
+
+  if (changed && !silent) toast("余白を調整しました。");
+  return changed;
+}
 function clipInt(n, lo, hi) {
   const x = toInt(n); if (x == null) return null;
   if (typeof lo === "number" && x < lo) return lo;
@@ -262,14 +467,40 @@ function clipInt(n, lo, hi) {
 /** フォントサイズ（pt）のクリップ */
 function cmClampFontSizePt(n) { return clipInt(n, 8, 50); }
 
-/** ドロップダウン（プリセット）を指定サイズに同期 */
-function cmSyncFontPresetToValue(size) {
+/** tplFontSizePreset が壊れている場合の再種付け */
+function ensureTplFontPresetSeedOptions(preset) {
+  try {
+    if (!preset) return;
+    const hasOption = preset.options && preset.options.length > 0;
+    if (hasOption) return;
+    const seeds = [12, 14, 16, 18, 24];
+    for (let i = 0; i < seeds.length; i++) {
+      const opt = document.createElement("option");
+      opt.value = String(seeds[i]);
+      opt.textContent = seeds[i] + "pt";
+      preset.appendChild(opt);
+    }
+  } catch (_) { }
+}
+
+/** クリップ済みサイズをプリセットへ強制反映（動的一時 option を 1 件だけ upsert） */
+function applyFontSizeToPreset(size) {
   try {
     const preset = $("#tplFontSizePreset");
     if (!preset) return;
+    ensureTplFontPresetSeedOptions(preset);
     const v = toInt(size);
     if (v == null) return;
     const vStr = String(v);
+
+    // 既存の動的一時項目は一度クリアしてから判定
+    const optsArr = preset.options ? Array.from(preset.options) : [];
+    for (let i = 0; i < optsArr.length; i++) {
+      const opt = optsArr[i];
+      if (opt && opt.dataset && opt.dataset.cmDynamic === "1") {
+        try { opt.remove(); } catch (_) { }
+      }
+    }
 
     let dyn = null;
     let foundStatic = false;
@@ -277,15 +508,13 @@ function cmSyncFontPresetToValue(size) {
     for (let i = 0; i < opts.length; i++) {
       const opt = opts[i];
       if (!opt) continue;
-      const isDyn = !!(opt.dataset && opt.dataset.cmDynamic === "1");
-      if (isDyn) { dyn = opt; continue; }
       if (opt.value === vStr) { foundStatic = true; }
     }
 
     if (foundStatic) {
       try { preset.value = vStr; } catch (_) { }
-      if (dyn) { try { dyn.remove(); } catch (_) {/* ignore */ } }
     } else {
+      // 動的 option を 1 件だけ生成
       if (!dyn) {
         dyn = document.createElement("option");
         dyn.dataset.cmDynamic = "1";
@@ -300,6 +529,11 @@ function cmSyncFontPresetToValue(size) {
   } catch (_) { }
 }
 
+/** ドロップダウン（プリセット）を指定サイズに同期 */
+function cmSyncFontPresetToValue(size) {
+  applyFontSizeToPreset(size);
+}
+
 /** 入力欄からの確定反映（blur 時に実行） */
 function cmCommitFontSizeFromInput() {
   try {
@@ -308,7 +542,7 @@ function cmCommitFontSizeFromInput() {
     let v = cmClampFontSizePt(sizePtEl.value);
     if (v == null) { return; }
     sizePtEl.value = String(v);
-    cmSyncFontPresetToValue(v);
+    applyFontSizeToPreset(v);
     markTplDirty("tplFontSizePt");
     markTplDirty("tplFontSizePreset");
     updateTplCreateEnabled();
@@ -320,9 +554,6 @@ let opLock = false;
 
 /** BG pad inline-edit guard */
 let _editingBgPad = false;
-
-/** A-B分けオン状態でサブ付き配置が1回以上行われたかどうか */
-let _hasSubPlacementSinceSubOn = false;
 
 /** 行ボタン群の一括有効/無効 */
 function setRowButtonsDisabled(disabled) {
@@ -336,7 +567,7 @@ function setRowButtonsDisabled(disabled) {
 function setBusyUI(b) {
   const ids = [
     "openNext", "backBtn", "queueStart",
-    "addFolder", "addFiles", "setOutFolder", "clearOutFolder",
+    "addFolder", "addFiles", "setOutFolder",
     "digitsSel", "base", "decBase", "incBase",
     "subMode", "subSelect", "bgEnabled", "bgPad",
     "placeAtSelection",
@@ -355,11 +586,29 @@ function setBusyUI(b) {
 }
 
 /** 操作逐次化のためのラッパー */
-async function withOpLock(name, fn) {
+async function withOpLock(name, fn, timeoutMs) {
   if (opLock) { toast("処理中です…"); return; }
   opLock = true; setBusyUI(true);
+
+  const to = (typeof timeoutMs === "number" && timeoutMs > 0) ? timeoutMs : 120000;
+  let timer = null;
+  const release = function () {
+    if (!opLock) return;
+    opLock = false;
+    setBusyUI(false);
+  };
+  if (to && isFinite(to)) {
+    timer = setTimeout(function () {
+      console.warn("[CutMark] withOpLock timeout:", name);
+      release();
+      toast("処理がタイムアウトしました。もう一度お試しください。");
+    }, to);
+  }
   try { return await fn(); }
-  finally { setBusyUI(false); opLock = false; }
+  finally {
+    if (timer) clearTimeout(timer);
+    release();
+  }
 }
 
 /** 桁数に応じた上限値（3桁=999 / 4桁=9999） */
@@ -387,6 +636,30 @@ function debugLog(label, details) {
     console.log(msg);
   } catch (_) { /* ignore */ }
 }
+// Expose debug helpers to console (debug mode only)
+try {
+  if (typeof window !== "undefined") {
+    window.debugLog = debugLog;
+    window.isDebugLogEnabled = isDebugLogEnabled;
+  }
+} catch (_) { /* ignore */ }
+
+function perfNow() {
+  if (!isDebugLogEnabled()) return 0;
+  try {
+    if (typeof performance !== "undefined" && typeof performance.now === "function") {
+      return performance.now();
+    }
+  } catch (_) { }
+  try { return Date.now(); } catch (_) { }
+  return 0;
+}
+function perfLog(label, startMs) {
+  if (!isDebugLogEnabled()) return;
+  let dur = 0;
+  try { if (startMs && startMs > 0) dur = perfNow() - startMs; } catch (_) { }
+  try { debugLog(label, "dur=" + dur.toFixed(1) + "ms"); } catch (_) { }
+}
 
 /** Entry の概観（ログ用） */
 function describeEntry(entry) {
@@ -410,16 +683,30 @@ function resetQueueProgress() {
   ensureSessionNav(true);
 }
 
+/** キューが空のときだけ進行状態を初期化するセーフ版 */
+function resetQueueProgressIfEmpty(prevPendingCount) {
+  if (!state || !state.session) return;
+  const n = (typeof prevPendingCount === "number" && prevPendingCount >= 0)
+    ? prevPendingCount
+    : countPendingJobs();
+  if (n > 0) return;
+  resetQueueProgress();
+}
+
 /** 出力先ラベル（存在する場合のみ）を更新 */
 async function updateOutFolderLabel() {
   const el = $("#outFolderLabel");
   if (!el) return;
   try {
     const tok = state.session.outputFolderToken;
-    if (!tok) { el.textContent = "(未設定)"; return; }
-    const e = await entryFromToken(tok).catch(function () { return null; });
-    el.textContent = e ? (e.nativePath || e.name) : "(無効)";
-  } catch (_) { el.textContent = "(未設定)"; }
+    if (!tok) { el.textContent = "出力先：（未設定）"; return; }
+    const e = await getUsableOutputFolderFromToken(tok);
+    if (e) {
+      el.textContent = "出力先：" + (e.nativePath || e.name || "(不明)");
+    } else {
+      el.textContent = "出力先：（無効）";
+    }
+  } catch (_) { el.textContent = "出力先：（未設定）"; }
 }
 
 
@@ -437,6 +724,16 @@ function ensureExtraOutputStateDefaults() {
   if (fmt !== "png" && fmt !== "jpg") {
     state.session.extraOutputFormat = "jpg";
   }
+}
+
+/** pending 状態のジョブ件数を数える（自動開始判定用） */
+function countPendingJobs() {
+  if (!state || !state.session || !Array.isArray(state.session.queue)) return 0;
+  let n = 0;
+  for (let i = 0; i < state.session.queue.length; i++) {
+    if (state.session.queue[i] && state.session.queue[i].state === "pending") n++;
+  }
+  return n;
 }
 
 /** 追加出力設定を取得（UIロジック用） */
@@ -760,7 +1057,7 @@ async function saveActiveHistoryPSDAndClose() {
 }
 async function openHistoryAtIndex(index) {
   const hist = state.session.historyPSD || [];
-  if (index < 0 || index >= hist.length) { toast("履歴の境界を超えています"); return; }
+  if (index < 0 || index >= hist.length) { toast("これ以上履歴がありません"); return; }
   const token = hist[index];
   const entry = await entryFromToken(token);
   if (!entry) { toast("履歴のPSDにアクセスできません"); return; }
@@ -784,10 +1081,24 @@ async function openHistoryAtIndex(index) {
  * フォント周り
  * ========================================================================== */
 let _fontCache = null;
-let _fontOptionsHTMLCache = "";
 let _fontLabelByPSName = null;
+let _fontOptionParking = null;
+let _cmFontMenuOpen = false;
+
+function getFontListElements() {
+  return {
+    chooser: document.getElementById("fontChooser"),
+    listPanel: document.getElementById("fontListPanel"),
+    list: document.getElementById("fontList")
+  };
+}
 
 async function listFonts() {
+  const t0 = perfNow();
+  if (isDebugLogEnabled()) {
+    try { console.time("[CutMark Debug] font:listFonts"); } catch (_) { }
+    try { debugLog("font:listFonts/start", "cache=" + (!!_fontCache)); } catch (_) { }
+  }
   if (_fontCache) return _fontCache;
   try {
     const fonts = (typeof app !== "undefined" && app && app.fonts) ? app.fonts : null;
@@ -802,7 +1113,7 @@ async function listFonts() {
       const fam = f.family || f.name || "";
       const sty = f.style || f.fontStyleName || "";
       const nm = (fam && sty) ? (fam + " " + sty) : (fam || f.name || ps);
-      items.push({ value: ps, label: nm });
+      items.push({ value: ps, label: nm, family: fam || ps });
     }
     // sort by label
     items.sort(function (a, b) {
@@ -819,12 +1130,24 @@ async function listFonts() {
     _fontCache = [{ value: "Arial-Black", label: "Arial-Black" }];
     return _fontCache;
   }
+  finally {
+    if (isDebugLogEnabled()) {
+      try { console.timeEnd("[CutMark Debug] font:listFonts"); } catch (_) { }
+      try { debugLog("font:listFonts/end", "count=" + (_fontCache ? _fontCache.length : 0)); } catch (_) { }
+      perfLog("font:listFonts/dur", t0);
+    }
+  }
 }
 
 async function populateFontSelectFromCache() {
   const select = $("#tplFontSel");
   if (!select) return;
   if (select._cmPopulating) return;
+  const t0 = perfNow();
+  if (isDebugLogEnabled()) {
+    try { console.time("[CutMark Debug] font:populate"); } catch (_) { }
+    try { debugLog("font:populate/start", "detached=" + !!(select && select._cmDetached)); } catch (_) { }
+  }
   select._cmPopulating = true;
   try {
     if (select._cmDetached) {
@@ -837,13 +1160,6 @@ async function populateFontSelectFromCache() {
     }
     if (select._cmPopulated && !select._cmDetached) return;
     select.disabled = true;
-    if (typeof _fontOptionsHTMLCache === "string" && _fontOptionsHTMLCache.length) {
-      const keep = select.value || "Arial-Black";
-      select.innerHTML = _fontOptionsHTMLCache;
-      try { if (keep) select.value = keep; } catch (_) { }
-      select._cmPopulated = true;
-      return;
-    }
     const list = await listFonts();
     const frag = document.createDocumentFragment();
     const added = new Set();
@@ -856,8 +1172,9 @@ async function populateFontSelectFromCache() {
       added.add(value);
     }
     const want = select.value || "Arial-Black";
-    addOption("Arial-Black", "Arial-Black (default)");
+    addOption("Arial-Black", "Arial-Black");
     if (Array.isArray(list) && list.length) {
+      const batch = 20;
       for (let i = 0; i < list.length; i++) {
         const f = list[i];
         if (!f || typeof f !== "object") continue;
@@ -865,6 +1182,7 @@ async function populateFontSelectFromCache() {
         if (!ps) continue;
         const label = f.label || f.displayName || ps;
         addOption(ps, label);
+        if (i % batch === 0) { await new Promise(res => setTimeout(res, 0)); }
       }
     }
     select.innerHTML = "";
@@ -872,8 +1190,8 @@ async function populateFontSelectFromCache() {
     try {
       if (want && added.has(want)) select.value = want;
       else select.value = "Arial-Black";
+      updateFontDisplayLabel();
     } catch (_) { }
-    _fontOptionsHTMLCache = select.innerHTML;
     select._cmPopulated = true;
   } catch (e) {
     try { console.warn("[CutMark] fonts/populate error:", e && (e.message || String(e))); } catch (_) { }
@@ -887,49 +1205,146 @@ async function populateFontSelectFromCache() {
     select.disabled = false;
     select._cmPopulating = false;
   }
+  if (isDebugLogEnabled()) {
+    try {
+      console.timeEnd("[CutMark Debug] font:populate");
+      console.debug("[CutMark Debug] font:populate options=", (select && select.options && select.options.length) ? select.options.length : 0, "detached=", !!(select && select._cmDetached));
+      debugLog("font:populate/end", "options=" + ((select && select.options) ? select.options.length : 0));
+      perfLog("font:populate/dur", t0);
+      try { if (typeof select._cmLogUiPaint === "function") select._cmLogUiPaint(); } catch (_) { }
+      updateFontDisplayLabel();
+    } catch (_) { }
+  }
+}
+function ensureFontParkingContainer() {
+  if (_fontOptionParking && document.body && _fontOptionParking.parentNode === document.body) return _fontOptionParking;
+  try {
+    const park = document.createElement("div");
+    park.id = "cmFontParking";
+    park.style.display = "none";
+    park.style.visibility = "hidden";
+    park.style.position = "absolute";
+    park.style.left = "-99999px";
+    park.style.top = "-99999px";
+    if (document.body) {
+      document.body.appendChild(park);
+      _fontOptionParking = park;
+    }
+  } catch (_) { }
+  return _fontOptionParking;
 }
 function detachFontSelectToSelection() {
+  const t0 = perfNow();
+  if (isDebugLogEnabled()) {
+    try { console.time("[CutMark Debug] font:detach"); } catch (_) { }
+    try { debugLog("font:detach/start"); } catch (_) { }
+  }
   try {
     const select = $("#tplFontSel");
     if (!select) return;
     if (select._cmDetached) return;
     const optsLen = (select.options && select.options.length) ? select.options.length : 0;
     if (optsLen <= 1) return;
-    try {
-      _fontOptionsHTMLCache = _fontOptionsHTMLCache || select.innerHTML;
-      select._cmSavedHTML = select.innerHTML;
-    } catch (_) { }
-    let val = "";
-    let label = "";
-    try {
-      val = select.value || "";
-      const opt = select.options[select.selectedIndex] || null;
-      label = (opt && (opt.textContent || opt.label)) || val || "";
-    } catch (_) { }
-    select.innerHTML = "";
-    const o = document.createElement("option");
-    o.value = val || "";
-    o.textContent = label || (val || "");
-    select.appendChild(o);
-    try { select.value = val || ""; } catch (_) { }
+    const parking = ensureFontParkingContainer();
+    if (!parking) return;
+    const options = Array.from(select.options || []);
+    if (!options.length) return;
+    const selectedIdx = select.selectedIndex >= 0 ? select.selectedIndex : 0;
+    const selectedOpt = options[selectedIdx] || options[0];
+    let selectedValue = "";
+    try { selectedValue = selectedOpt.value || ""; } catch (_) { }
+    for (let i = 0; i < options.length; i++) {
+      const opt = options[i];
+      if (!opt) continue;
+      try { opt.dataset.cmParkOrder = String(i); } catch (_) { }
+      if (opt === selectedOpt) continue;
+      try {
+        opt.dataset.cmParked = "1";
+        opt.dataset.cmParkedFor = select.id || "tplFontSel";
+        parking.appendChild(opt);
+      } catch (_) { }
+    }
+    try { select.value = selectedValue; } catch (_) { }
     select._cmDetached = true;
   } catch (_) { }
+  finally {
+    if (isDebugLogEnabled()) {
+      try {
+        console.timeEnd("[CutMark Debug] font:detach");
+        const select = $("#tplFontSel");
+        const len = select && select.options ? select.options.length : 0;
+        console.debug("[CutMark Debug] font:detach remaining options=", len);
+        debugLog("font:detach/end", "remain=" + len);
+        perfLog("font:detach/dur", t0);
+      } catch (_) { }
+    }
+  }
 }
 function attachFontSelectFromCache() {
+  const t0 = perfNow();
+  if (isDebugLogEnabled()) {
+    try { console.time("[CutMark Debug] font:attach"); } catch (_) { }
+    try { debugLog("font:attach/start"); } catch (_) { }
+  }
   try {
     const select = $("#tplFontSel");
     if (!select) return;
     if (!select._cmDetached) return;
-    const html = select._cmSavedHTML || _fontOptionsHTMLCache || "";
-    if (html && html.length) {
-      const prev = select.value || "";
-      select.innerHTML = html;
-      try { if (prev) select.value = prev; } catch (_) { }
+    const parking = ensureFontParkingContainer();
+    const parked = parking ? Array.from(parking.querySelectorAll('option[data-cm-parked="1"]')) : [];
+    const mine = [];
+    for (let i = 0; i < parked.length; i++) {
+      const opt = parked[i];
+      if (!opt) continue;
+      const forId = opt.dataset ? (opt.dataset.cmParkedFor || "") : "";
+      if (forId && select.id && forId !== select.id) continue;
+      mine.push(opt);
+    }
+    if (!mine.length) {
       select._cmDetached = false;
-      select._cmPopulated = true;
+      select._cmPopulated = select._cmPopulated || (select.options && select.options.length > 0);
       return;
     }
+    let savedVal = "";
+    try { savedVal = select.value || ""; } catch (_) { }
+    const existing = Array.from(select.options || []);
+    const all = existing.concat(mine);
+    all.sort(function (a, b) {
+      const ai = Number((a && a.dataset && a.dataset.cmParkOrder) || -1);
+      const bi = Number((b && b.dataset && b.dataset.cmParkOrder) || -1);
+      if (ai < bi) return -1; if (ai > bi) return 1; return 0;
+    });
+    while (select.firstChild) { select.removeChild(select.firstChild); }
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < all.length; i++) {
+      const opt = all[i];
+      if (!opt) continue;
+      try {
+        if (opt.dataset) {
+          delete opt.dataset.cmParked;
+          delete opt.dataset.cmParkedFor;
+        }
+      } catch (_) { }
+      frag.appendChild(opt);
+    }
+    select.appendChild(frag);
+    try { if (savedVal) select.value = savedVal; } catch (_) { }
+    select._cmDetached = false;
+    select._cmPopulated = true;
+    updateFontDisplayLabel();
   } catch (_) { }
+  finally {
+    if (isDebugLogEnabled()) {
+      try {
+        console.timeEnd("[CutMark Debug] font:attach");
+        const select = $("#tplFontSel");
+        const len = select && select.options ? select.options.length : 0;
+        console.debug("[CutMark Debug] font:attach options=", len, "detached=", !!(select && select._cmDetached));
+        debugLog("font:attach/end", "len=" + len + " detached=" + (!!(select && select._cmDetached)));
+        perfLog("font:attach/dur", t0);
+      } catch (_) { }
+    }
+  }
 }
 function ensureFontListPopulated() { return populateFontSelectFromCache(); }
 function wireFontSelectLazy() {
@@ -937,6 +1352,42 @@ function wireFontSelectLazy() {
   if (!select) return;
   if (select._cmFontLazyWired) return;
   select._cmFontLazyWired = true;
+  // [DEBUG] UI体感計測用（pointerdown 発火時刻を記録）
+  let _cmFontUiStart = 0;
+  function probeDropdown(startMs) {
+    const tOpen = startMs || perfNow();
+    if (isDebugLogEnabled()) {
+      try { console.debug("[CutMark Debug] font:dropdown/probe start t=" + tOpen.toFixed(1)); } catch (_) { }
+    }
+    const delays = [0, 50, 100, 200, 500, 1000, 2000, 4000, 6000, 8000, 10000, 12000];
+    for (let i = 0; i < delays.length; i++) {
+      setTimeout(function () { try { perfLog("font:dropdown/open", tOpen); } catch (_) { } }, delays[i]);
+    }
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              try { perfLog("font:dropdown/paint", tOpen); } catch (_) { }
+            });
+          });
+        });
+      });
+    });
+  }
+  const onDown = function () {
+    // フォントメニュー開きフラグをセット（12sで自動解除）
+    _cmFontMenuOpen = true;
+    setTimeout(function () { _cmFontMenuOpen = false; }, 12000);
+    if (!isDebugLogEnabled()) return;
+    _cmFontUiStart = perfNow();
+    debugLog("font:ui/pointerdown", "start");
+    probeDropdown(_cmFontUiStart);
+  };
+  // pointerdown / mousedown / click すべてで計測を開始（冪等）
+  select.addEventListener("pointerdown", onDown, { capture: true });
+  try { select.addEventListener("mousedown", onDown, { capture: true }); } catch (_) { }
+  // hidden select はユーザー操作しないため click 計測は不要
   const ensure = () => {
     try {
       if (select._cmDetached) {
@@ -952,6 +1403,26 @@ function wireFontSelectLazy() {
     const k = String(ev.key || "");
     if (k === "ArrowDown" || k === "Enter" || k === " ") { ensure(); }
   }, { capture: true });
+
+  // [DEBUG] populate 完了後に UI 表示までの遅延を可視化
+  select._cmLogUiPaint = function () {
+    if (!isDebugLogEnabled()) return;
+    const start = _cmFontUiStart || perfNow();
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => { perfLog("font:ui/paint", start); });
+    });
+  };
+}
+
+function warmupFontList() {
+  try {
+    if (isDebugLogEnabled()) { try { console.time("[CutMark Debug] font:warmup"); } catch (_) { } }
+    if (_fontCache) return;
+    listFonts().catch(function () { /* 初回列挙の遅延吸収用、エラーは握りつぶす */ });
+  } catch (_) { }
+  finally {
+    if (isDebugLogEnabled()) { try { console.timeEnd("[CutMark Debug] font:warmup"); } catch (_) { } }
+  }
 }
 
 /* ============================================================================
@@ -1041,6 +1512,12 @@ function applyActiveTemplateDefaultsToForm(force) {
       setIf("tplY", t.cutBox.y);
       setIf("tplW", t.cutBox.w);
       setIf("tplH", t.cutBox.h);
+      if (t.boxPadding) {
+        setIf("tplPadTop", t.boxPadding.top);
+        setIf("tplPadRight", t.boxPadding.right);
+        setIf("tplPadBottom", t.boxPadding.bottom);
+        setIf("tplPadLeft", t.boxPadding.left);
+      }
     }
     const sz = toInt($("#tplFontSizePt") && $("#tplFontSizePt").value);
     if (sz != null && (force || !isTplDirty("tplFontSizePt"))) {
@@ -1065,6 +1542,7 @@ function applyActiveTemplateDefaultsToForm(force) {
           opt0.textContent = label;
         }
       } catch (_) { }
+      updateFontDisplayLabel();
     }
   } catch (_) { }
 }
@@ -1107,6 +1585,7 @@ async function readBoundsFromSelectionIntoForm() {
     $("#tplW").value = String(Math.round(b.right - b.left));
     $("#tplH").value = String(Math.round(b.bottom - b.top));
     try { markTplDirty("tplX"); markTplDirty("tplY"); markTplDirty("tplW"); markTplDirty("tplH"); } catch (_) { }
+    try { validateTplPadding({ silent: true }); } catch (_) { }
     updateTplCreateEnabled();
   } catch (e) {
     toast("矩形選択がありません。キャンバス上で選択範囲を作成してから実行してください。");
@@ -1114,6 +1593,11 @@ async function readBoundsFromSelectionIntoForm() {
 }
 async function onTemplateCreate() {
   try {
+    try { validateTplPadding({ silent: true }); } catch (_) { }
+    const padVal = (el) => {
+      const n = toInt(el && el.value);
+      return (n != null && n >= 0) ? n : 0;
+    };
     const data = {
       name: String($("#tplName").value || "").trim(),
       rows: toInt($("#tplRows").value),
@@ -1127,6 +1611,12 @@ async function onTemplateCreate() {
         y: toInt($("#tplY").value),
         w: toInt($("#tplW").value),
         h: toInt($("#tplH").value)
+      },
+      boxPadding: {
+        top: padVal($("#tplPadTop")),
+        right: padVal($("#tplPadRight")),
+        bottom: padVal($("#tplPadBottom")),
+        left: padVal($("#tplPadLeft"))
       }
     };
     await withOpLock("CreateTemplateV2", async function () {
@@ -1159,24 +1649,53 @@ function wireTplCreateAccordion() {
   const acc = getTplCreateAccordionEl();
   if (!acc) return;
   setAccordionOpen(acc, false);
-  function onOpen() {
-    try { attachFontSelectFromCache(); } catch (_) { }
+  function measureAccordionPaint(label, startMs) {
+    if (!isDebugLogEnabled()) return;
+    let lastH = -1;
+    let stable = 0;
+    const tick = () => {
+      const h = (acc && acc.scrollHeight) ? acc.scrollHeight : 0;
+      if (Math.abs(h - lastH) < 0.5) stable += 1; else stable = 0;
+      lastH = h;
+      if (stable >= 3) {
+        perfLog(label + "/paint", startMs);
+      } else {
+        requestAnimationFrame(tick);
+      }
+    };
+    requestAnimationFrame(tick);
+  }
+  function onOpen(startMs) {
+    const t0 = startMs || perfNow();
     clearTplDirty();
     applyActiveTemplateDefaultsToForm(true);
     autoInitDpiFromActiveDocument(false);
     updateTplCreateEnabled();
+    // フォントセレクトの実体復元はユーザー操作時（pointerdown/focus）に遅延させる
+    if (isDebugLogEnabled()) {
+      requestAnimationFrame(() => { requestAnimationFrame(() => { perfLog("accordion/open", t0); measureAccordionPaint("accordion/open", t0); }); });
+    }
   }
-  function onClose() {
+  function onClose(startMs) {
+    const t0 = startMs || perfNow();
     try { detachFontSelectToSelection(); } catch (_) { }
+    if (isDebugLogEnabled()) {
+      requestAnimationFrame(() => { requestAnimationFrame(() => { perfLog("accordion/close", t0); measureAccordionPaint("accordion/close", t0); }); });
+    }
   }
   if (isAccordionOpen(acc)) onOpen();
   if (typeof acc.addEventListener === "function") {
     const handler = function () {
+      const tStart = perfNow();
+      if (_cmFontMenuOpen) {
+        if (isDebugLogEnabled()) debugLog("accordion/skip", "font menu open");
+        return; // ドロップダウン開放中はトグルを無視
+      }
       const op = isAccordionOpen(acc);
       const st = op ? "open" : "close";
       if (acc._cmLastToggleState === st) return;
       acc._cmLastToggleState = st;
-      if (op) onOpen(); else onClose();
+      if (op) onOpen(tStart); else onClose(tStart);
     };
     acc.addEventListener("sp-accordion-item-toggle", handler, { capture: false });
     acc.addEventListener("toggle", handler, { capture: false });
@@ -1200,7 +1719,7 @@ function renderTemplateUI() {
         if (active && p.id === active.id) o.selected = true;
         select.appendChild(o);
       }
-      const enableIds = ["addFolder", "addFiles", "setOutFolder", "clearOutFolder", "openNext", "backBtn", "placeAtSelection"];
+      const enableIds = ["addFolder", "addFiles", "setOutFolder", "openNext", "backBtn", "placeAtSelection"];
       enableIds.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = false; });
       setRowButtonsDisabled(false);
       try { select.value = (active && active.id) ? active.id : ""; } catch (_) { }
@@ -1208,7 +1727,7 @@ function renderTemplateUI() {
       const o2 = document.createElement("option");
       o2.value = ""; o2.textContent = "テンプレなし";
       select.appendChild(o2);
-      const disableIds = ["addFolder", "addFiles", "setOutFolder", "clearOutFolder", "openNext", "backBtn", "placeAtSelection"];
+      const disableIds = ["addFolder", "addFiles", "setOutFolder", "openNext", "backBtn", "placeAtSelection"];
       disableIds.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = true; });
       setRowButtonsDisabled(true);
       try { select.value = ""; } catch (_) { }
@@ -1268,101 +1787,108 @@ function renderStatus() {
   }
 
   const started = !!state.session.started;
-  const qbtn = $("#queueStart"), nextBtn = $("#openNext"), bb = $("#backBtn");
-  if (qbtn) qbtn.disabled = started || (total === 0);
-  if (nextBtn) nextBtn.disabled = !started;
+  const nextBtn = $("#openNext"), bb = $("#backBtn");
+  const canManualStart = (rest > 0); // [MOD] 未開始でも pending があれば手動開始を許容
+  if (nextBtn) nextBtn.disabled = !(started || canManualStart);
   if (bb) bb.disabled = !started;
 }
 
 async function placeAtRow(row) {
-  await withOpLock("Place_Row_" + row, async function () {
-    try {
-      const t = getActiveTemplate();
-      const rows = clampRows(t && t.cutBox && typeof t.cutBox.rows === "number" ? t.cutBox.rows : 1);
-      let r = Math.round(Number(row) || 1);
-      if (r < 1) r = 1;
-      if (r > rows) { toast("このテンプレートは " + rows + " 行までです"); return; }
-      const inner = TPL.innerBoundsOfRow(r);
+  try {
+    await withOpLock("Place_Row_" + row, async function () {
+      try {
+        const t = getActiveTemplate();
+        const rows = clampRows(t && t.cutBox && typeof t.cutBox.rows === "number" ? t.cutBox.rows : 1);
+        let r = Math.round(Number(row) || 1);
+        if (r < 1) r = 1;
+        if (r > rows) { toast("このテンプレートは " + rows + " 行までです"); return; }
+        const inner = TPL.innerBoundsOfRow(r);
 
-      const subModeEl = $("#subMode");
-      const subSelEl = $("#subSelect");
-      const subOn = subModeEl && subModeEl.checked && subSelEl && subSelEl.value;
+        const subModeEl = $("#subMode");
+        const subSelEl = $("#subSelect");
+        const subOn = subModeEl && subModeEl.checked && subSelEl && subSelEl.value;
 
-      if (subOn) {
-        state.sub = subSelEl.value;
-        _hasSubPlacementSinceSubOn = true;
-      } else {
-        state.sub = "";
-      }
+        if (subOn) {
+          state.sub = subSelEl.value;
+          markSubPlacement();
+        } else {
+          state.sub = "";
+        }
 
-      const label = currentLabelForTemplate();
-      const bgColor = (t.bg && t.bg.colorRGB && t.bg.colorRGB.length >= 3) ? t.bg.colorRGB : [255, 255, 255];
+        const label = currentLabelForTemplate();
+        const bgColor = (t.bg && t.bg.colorRGB && t.bg.colorRGB.length >= 3) ? t.bg.colorRGB : [255, 255, 255];
 
-      let textLayerId = null;
-      await PS3.withModal("Place_Text_Row_" + r, async function () {
-        textLayerId = await PS3.makePointTextTopAlignedInRectDOM({
-          textKey: label,
-          bounds: inner,
-          fontPSName: t.text.fontPSName,
-          sizePt: t.text.sizePt,
-          strokePx: (t.text && typeof t.text.strokePx === "number") ? t.text.strokePx : 2,
-          strokeRGB: (t.text && t.text.strokeRGB && t.text.strokeRGB.length >= 3) ? t.text.strokeRGB : [255, 255, 255]
+        let textLayerId = null;
+        // [MOD] テキスト生成と背景生成はモーダルを分離する（NOTES 1.24）
+        // 理由: contentLayer を同一 executeAsModal で生成すると、一部環境で parameterError/target not selectable が発生し
+        //       配置全体がロールバックした事例がある。まずテキストを確実に作り、背景は別モーダルでベストエフォートにする。
+        await PS3.withModal("Place_Text_Row_" + r, async function () {
+          textLayerId = await PS3.makePointTextTopAlignedInRectDOM({
+            textKey: label,
+            bounds: inner,
+            fontPSName: t.text.fontPSName,
+            sizePt: t.text.sizePt,
+            strokePx: (t.text && typeof t.text.strokePx === "number") ? t.text.strokePx : 2,
+            strokeRGB: (t.text && t.text.strokeRGB && t.text.strokeRGB.length >= 3) ? t.text.strokeRGB : [255, 255, 255]
+          });
         });
-      });
 
-      try { await core.flush(); } catch (_) { }
+        try { await core.flush(); } catch (_) { }
 
-      if (state.bg.enabled) {
-        await PS3.withModal("Make_BG_ContentLayer", async function () {
-          try {
-            const bgId = await PS3.makeWhiteUnderTextBounds(textLayerId, state.bg.padding, bgColor);
+        if (state.bg.enabled) {
+          await PS3.withModal("Make_BG_ContentLayer", async function () {
             try {
-              const moved = await PS3.moveLayerBelowDOM(bgId, textLayerId);
-              if (!moved) {
-                debugLog("bg-reorder/warn", "moveLayerBelowDOM returned false");
-                toast("背景の重ね順を変更できませんでした（処理は継続）");
+              const bgId = await PS3.makeWhiteUnderTextBounds(textLayerId, state.bg.padding, bgColor);
+              try {
+                const moved = await PS3.moveLayerBelowDOM(bgId, textLayerId);
+                if (!moved) {
+                  debugLog("bg-reorder/warn", "moveLayerBelowDOM returned false");
+                  toast("背景の重ね順を変更できませんでした（処理は継続）");
+                }
+              } catch (reErr) {
+                console.warn("[CutMark] moveLayerBelowDOM failed:", reErr);
+                toast("背景の重ね順変更で例外が発生しました（処理は継続）");
               }
-            } catch (reErr) {
-              console.warn("[CutMark] moveLayerBelowDOM failed:", reErr);
-              toast("背景の重ね順変更で例外が発生しました（処理は継続）");
+            } catch (bgErr) {
+              console.warn("[CutMark] makeWhiteUnderTextBounds failed:", bgErr);
+              toast("背景レイヤーの生成に失敗しました: " + (bgErr && bgErr.message ? bgErr.message : bgErr));
             }
-          } catch (bgErr) {
-            console.warn("[CutMark] makeWhiteUnderTextBounds failed:", bgErr);
-            toast("背景レイヤーの生成に失敗しました: " + (bgErr && bgErr.message ? bgErr.message : bgErr));
+          });
+        }
+
+        const subModeEl2 = $("#subMode");
+        const subSelEl2 = $("#subSelect");
+        if (subModeEl2 && subModeEl2.checked) {
+          const next = nextSubLetter(state.sub);
+          if (next === null) {
+            toast("サブは Z までです。サブ文字を編集してください。");
+          } else {
+            state.sub = next;
+            if (subSelEl2) subSelEl2.value = state.sub;
           }
-        });
-      }
-
-      const subModeEl2 = $("#subMode");
-      const subSelEl2 = $("#subSelect");
-      if (subModeEl2 && subModeEl2.checked) {
-        const next = nextSubLetter(state.sub);
-        if (next === null) {
-          toast("サブは Z までです。サブ文字を編集してください。");
         } else {
-          state.sub = next;
-          if (subSelEl2) subSelEl2.value = state.sub;
+          const max = maxForDigits(state.digits);
+          if (state.nextBase >= max) {
+            toast("桁数の最大値に達しました。次番号を編集してください。");
+            state.nextBase = max;
+          } else {
+            state.nextBase += 1;
+          }
         }
-      } else {
-        const max = maxForDigits(state.digits);
-        if (state.nextBase >= max) {
-          toast("桁数の最大値に達しました。次番号を編集してください。");
-          state.nextBase = max;
-        } else {
-          state.nextBase += 1;
-        }
-      }
 
-      persist();
-      renderStatus();
-      toast(r + "コマ目に上寄せで配置しました");
-    } catch (e) {
-      console.error(e);
-      toast(e.message || String(e));
-    }
-  });
+        persist();
+        renderStatus();
+        toast(r + "コマ目に上寄せで配置しました");
+      } catch (e) {
+        console.error(e);
+        toast(e.message || String(e));
+      }
+    });
+  } finally {
+    // [MOD] 行ボタン操作後もショートカットを途切れさせないため、配置完了後にパネルへフォーカスを戻す
+    try { refocusPanelAfterHostOps(); } catch (_) { }
+  }
 }
-async function placeAtTemplate() { return await placeAtRow(1); }
 async function placeAtSelection() {
   await withOpLock("Place_Selection", async function () {
     try {
@@ -1380,7 +1906,7 @@ async function placeAtSelection() {
 
       if (subOn) {
         state.sub = subSelEl.value;
-        _hasSubPlacementSinceSubOn = true;
+        markSubPlacement();
       } else {
         state.sub = "";
       }
@@ -1467,10 +1993,31 @@ function nextSubLetter(ch) {
 /* ============================================================================
  * I/O：フォルダ/ファイル追加・保存・進捗
  * ========================================================================== */
+/**
+ * 出力先用フォルダへの書き込み権限を要求するヘルパー。
+ * - requestPermission が無い場合（旧 Entry）でも動作を止めない。
+ */
+async function requestReadWriteIfNeeded(entry) {
+  return await requestReadWriteIfNeededState(entry);
+}
+
+/**
+ * 指定フォルダ直下に output フォルダを用意し、永続トークンを返す。
+ * - 既に存在する場合は getEntry で再利用し、重複作成エラーを避ける。
+ * - baseFolderEntry が無効な場合は null を返す。
+ * - opts.requestWrite = true のときは書き込み権限を事前要求する。
+ */
+async function prepareOutputFolderUnder(baseFolderEntry, opts) {
+  return await prepareOutputFolderUnderState(baseFolderEntry, opts);
+}
+
 async function addFolderToQueue() {
+  let needAutoStart = false;
   await withOpLock("AddFolderToQueue", async function () {
+    const pendingBefore = countPendingJobs();
     const folder = await fsmod.getFolder();
     if (!folder) return;
+    const hasValidOutput = await getUsableOutputFolderFromToken(state.session.outputFolderToken);
     state.session.inputMode = "folder";
     const prevLen = state.session.queue.length;
     const baseDirToken = await tokenOf(folder);
@@ -1484,32 +2031,35 @@ async function addFolderToQueue() {
       enqueueFileEntry({ token: tok, name: e.name }, normalizeDstRel(e.name), baseDirToken);
       state.session.queue[state.session.queue.length - 1].token = tok;
     }
-    try {
-      const entries = await folder.getEntries();
-      let psdFolder = null;
-      for (let i = 0; i < entries.length; i++) {
-        if (entries[i].isFolder && entries[i].name === "output") { psdFolder = entries[i]; break; }
+    if (pendingBefore === 0 && !inHistoryView() && !isManagedQueueDocOpen()) {
+      needAutoStart = (state.session.queue.length > prevLen);
+    }
+    if (!hasValidOutput && state.session.queue.length > prevLen) {
+      const prepared = await prepareOutputFolderUnder(folder, { requestWrite: true });
+      if (prepared && prepared.token) {
+        state.session.outputFolderToken = prepared.token;
       }
-      if (!psdFolder) psdFolder = await folder.createFolder("output");
-      const token = await fsmod.createPersistentToken(psdFolder);
-      state.session.outputFolderToken = token;
-    } catch (e) {
-      console.warn("[CutMark] failed to prepare PSD folder under selected folder:", e);
     }
     if (state.session.queue.length > prevLen) {
-      resetQueueProgress();
+      resetQueueProgressIfEmpty(pendingBefore);
     }
     persist(); renderStatus();
     await updateOutFolderLabel();
     syncExtraOutputControlsFromState();
-    syncExtraOutputControlsFromState();
     toast("フォルダからキューに追加しました");
   });
+  if (needAutoStart) {
+    await autoStartQueueIfIdle("addFolderToQueue");
+  }
 }
 async function addFilesToQueue() {
+  let needAutoStart = false;
   await withOpLock("AddFilesToQueue", async function () {
+    const pendingBefore = countPendingJobs();
     const files = await fsmod.getFileForOpening({ allowMultiple: true, types: ["jpg", "jpeg", "png", "psd"] });
     if (!files || !files.length) return;
+    const hasValidOutput = await getUsableOutputFolderFromToken(state.session.outputFolderToken);
+    let firstAcceptedParent = null;
     state.session.inputMode = "files";
     const prevLen = state.session.queue.length;
     for (let i = 0; i < files.length; i++) {
@@ -1518,78 +2068,130 @@ async function addFilesToQueue() {
       if (!ALLOWED_EXT.has(ext)) continue;
       const token = await tokenOf(f);
       let dirToken = null;
+      let parent = null;
       try {
-        let parent = null;
         if (typeof f.getParent === 'function') parent = await f.getParent();
         else if (f && f.parent) parent = f.parent;
         if (parent) dirToken = await tokenOf(parent);
       } catch (_) { }
+      if (!firstAcceptedParent && parent) firstAcceptedParent = parent;
       enqueueFileEntry({ token: token, name: f.name }, normalizeDstRel(f.name), dirToken);
       state.session.queue[state.session.queue.length - 1].token = token;
     }
+    if (pendingBefore === 0 && !inHistoryView() && !isManagedQueueDocOpen()) {
+      needAutoStart = (state.session.queue.length > prevLen);
+    }
+    let ensuredByAddFiles = false;
+    if (!hasValidOutput && state.session.queue.length > prevLen) {
+      // [MOD] ファイル追加では既存の出力先選択ダイアログを利用して明示設定させる
+      const ok = await ensureOutputFolderBeforeStart();
+      if (!ok) {
+        toast("出力先が未設定です。『出力先選択』で設定してください。");
+        needAutoStart = false; // [MOD] ユーザーがキャンセルした場合は自動開始を抑止し二重ダイアログを防ぐ
+      } else {
+        ensuredByAddFiles = true;
+      }
+    }
     if (state.session.queue.length > prevLen) {
-      resetQueueProgress();
+      resetQueueProgressIfEmpty(pendingBefore);
     }
     persist(); renderStatus();
+    await updateOutFolderLabel();
     toast("ファイルをキューに追加しました");
   });
-}
-async function resolveOutputFolderForCurrentJob() {
-  debugLog("resolveOutputFolder/start", "cursor=" + state.session.cursor + " token=" + (state.session.outputFolderToken || "<none>"));
-  if (state.session.outputFolderToken) {
-    try {
-      const f = await entryFromToken(state.session.outputFolderToken);
-      if (f && (f.isFolder || typeof f.getEntries === 'function' || typeof f.createFile === 'function')) {
-        debugLog("resolveOutputFolder/reuse", describeEntry(f));
-        return f;
-      }
-      console.warn("[CutMark] outputFolderToken points to non-folder or unknown entry.");
-    } catch (e) {
-      console.warn("[CutMark] outputFolderToken invalid, will re-init.");
-      debugLog("resolveOutputFolder/reuse-failed", e && (e.message || String(e)));
-    }
+  if (needAutoStart) {
+    await autoStartQueueIfIdle("addFilesToQueue");
   }
-  const idx = state.session.cursor;
-  const job = state.session.queue[idx];
-  if (!job || !job.token) throw new Error("出力先が未設定で、現在ジョブも特定できません。");
-  if (job.srcDirToken) {
-    try {
-      const dir = await entryFromToken(job.srcDirToken);
-      if (dir && (dir.isFolder || typeof dir.getEntries === 'function')) {
-        let psdFolder = null;
-        try { psdFolder = await dir.getEntry("output"); } catch (_) { }
-        if (!psdFolder) psdFolder = await dir.createFolder("output");
-        const token = await fsmod.createPersistentToken(psdFolder);
-        state.session.outputFolderToken = token; persist();
-        await updateOutFolderLabel();
-        // [MOD] 冗長だった二重呼び出しを単一に整理（追加出力 UI 反映は一度で十分）
-        syncExtraOutputControlsFromState();
-        return psdFolder;
-      }
-    } catch (_) { }
-  }
-  const srcEntry = await entryFromToken(job.token);
-  let parent = null;
-  try {
-    if (srcEntry && typeof srcEntry.getParent === "function") parent = await srcEntry.getParent();
-    else if (srcEntry && srcEntry.parent) parent = srcEntry.parent;
-  } catch (_) { }
-  if (!parent || !(parent.isFolder || typeof parent.getEntries === "function")) {
-    debugLog("resolveOutputFolder/parent-missing", "src=" + describeEntry(srcEntry));
-    throw new Error("出力先フォルダが未設定です。『出力先選択』ボタンで指定してください。");
-  }
-  let psdFolder = null;
-  try { psdFolder = await parent.getEntry("output"); } catch (_) { }
-  if (!psdFolder) psdFolder = await parent.createFolder("output");
-  const token = await fsmod.createPersistentToken(psdFolder);
-  state.session.outputFolderToken = token;
-  persist();
-  await updateOutFolderLabel();
-  syncExtraOutputControlsFromState();
-  return psdFolder;
 }
 
-async function saveCurrentDocIfAny(retried) {
+/**
+ * 現在または次の pending ジョブから出力先を自動設定する
+ * - outputFolderToken が未設定/無効のときだけ実行
+ * - srcDirToken があればそれを優先し、無ければ元ファイルの親フォルダを使う
+ */
+async function tryAutoSetOutputFromCurrentJob() {
+  const hasValid = await getUsableOutputFolderFromToken(state && state.session && state.session.outputFolderToken);
+  if (hasValid) return true;
+  if (!state || !state.session || !Array.isArray(state.session.queue)) return false;
+
+  // [MOD] pending を前から順に走査し、書き込み可能な親フォルダで output/ を生成する
+  for (let i = 0; i < state.session.queue.length; i++) {
+    if (state.session.queue[i].state !== "pending") continue;
+    const job = state.session.queue[i];
+    let baseFolder = null;
+
+    // 1) srcDirToken 優先（フォルダ追加経由で確実に存在する場合が多い）
+    try {
+      if (job && job.srcDirToken) {
+        baseFolder = await entryFromToken(job.srcDirToken);
+      }
+    } catch (_) { baseFolder = null; }
+
+    // 2) 入力ファイルの親フォルダをフォールバックとして利用
+    if (!baseFolder && job && job.token) {
+      try {
+        const srcEntry = await entryFromToken(job.token);
+        if (srcEntry && typeof srcEntry.getParent === "function") {
+          baseFolder = await srcEntry.getParent();
+        } else if (srcEntry && srcEntry.parent) {
+          baseFolder = srcEntry.parent;
+        }
+      } catch (_) { baseFolder = null; }
+    }
+    if (!baseFolder) continue;
+
+    const prepared = await prepareOutputFolderUnder(baseFolder, { requestWrite: true });
+    if (prepared && prepared.token) {
+      state.session.outputFolderToken = prepared.token;
+      persist();
+      await updateOutFolderLabel();
+      return true;
+    }
+  }
+  return false;
+}
+async function resolveOutputFolderForCurrentJob() {
+  const folder = await resolveOutputFolderForCurrentJobState();
+  // トークンが更新されている可能性があるため UI ラベルと追加出力 UI を同期
+  await updateOutFolderLabel();
+  syncExtraOutputControlsFromState();
+  return folder;
+}
+
+// [MOD][OUTF-001/002/004] 出力先プリフライト共通ヘルパー
+function isOutputFolderError(e) {
+  const s = (e && (e.message || e.name || e.code || e.toString())) || "";
+  return /output.+folder|未設定|No.+output.+folder|resolveOutputFolder|persistent.+token|getEntryForPersistentToken|invalid.+token/i.test(String(s));
+}
+
+async function ensureOutputFolderInteractive(reason) {
+  if (typeof ensureOutputFolderBeforeStart === "function") {
+    const ok = await ensureOutputFolderBeforeStart({ interactive: true, reason: reason || "save" });
+    if (ok) return true;
+    try { if (state && state.session && state.session.outputFolderToken) return true; } catch (_) { }
+  }
+  return false;
+}
+
+async function preflightOutputFolder(reason) {
+  try {
+    const f = await resolveOutputFolderForCurrentJob();
+    if (f) return true;
+  } catch (_) { /* 非致命：対話プリフライトへフォールバック */ }
+  const ok = await ensureOutputFolderInteractive(reason);
+  if (ok) return true;
+  try { return !!(state && state.session && state.session.outputFolderToken); } catch (_) { return false; }
+}
+
+// [MOD] 管理外ドキュメント保存スキップ時の通知制御用フラグ（多重トースト抑止）
+let _cmLastSaveSkippedUnmanaged = false;
+let _cmLastUnmanagedNoticeTs = 0;
+// [MOD] 管理ドキュメントが外部で閉じられた場合の通知抑止
+let _cmLastManagedMissingNoticeTs = 0;
+
+async function saveCurrentDocIfAny(retryCount) {
+  const retried = (typeof retryCount === "number") ? retryCount >= 1 : !!retryCount;
+  const nextRetryCount = (typeof retryCount === "number") ? (retryCount + 1) : 1;
   try {
     if (!isDocOpen()) return null;
 
@@ -1599,11 +2201,37 @@ async function saveCurrentDocIfAny(retried) {
     const __a = (curId != null) ? String(curId) : "";
     const __b = (state && state.session && state.session.managedDocId != null) ? String(state.session.managedDocId) : "";
     if (!__a || !__b || __a !== __b) {
-      console.warn("[CutMark] skip save: unmanaged active document", { activeId: __a, managedId: __b });
+      // [MOD] 管理外ドキュメント警告はトーストで十分のためデバッグ専用ログに抑制
+      debugLog("save/skip-unmanaged", { activeId: __a, managedId: __b });
+      _cmLastSaveSkippedUnmanaged = true;
+      const now = Date.now();
+      if (now - _cmLastUnmanagedNoticeTs > 500) {
+        _cmLastUnmanagedNoticeTs = now;
+        toast("管理外のドキュメントが開かれています。キューから開いたファイルを選択してから再実行してください。");
+      }
       return null;
     }
 
-    const outFolder = await resolveOutputFolderForCurrentJob();
+    // 正常系へ入ったら管理外フラグをリセット
+    _cmLastSaveSkippedUnmanaged = false;
+
+    // 保存前に出力先をプリフライト（OUTF-001/002/004）
+    const okPre = await preflightOutputFolder("save");
+    if (!okPre) {
+      toast("保存を中止しました。［出力先］を設定してください。");
+      return null;
+    }
+
+    let outFolder = null;
+    try {
+      outFolder = await resolveOutputFolderForCurrentJob();
+    } catch (outErr) {
+      if (!retried && isOutputFolderError(outErr)) {
+        const ok = await preflightOutputFolder("save");
+        if (ok) return await saveCurrentDocIfAny(nextRetryCount);
+      }
+      throw outErr;
+    }
     const idx = state.session.cursor;
     const job = state.session.queue[idx];
     const dstRel = job && job.dstRel ? job.dstRel : ("untitled_" + Date.now() + ".psd");
@@ -1670,27 +2298,27 @@ async function saveCurrentDocIfAny(retried) {
 
       // ドキュメントをクローズ（保存済みとして）
       try {
-    const managedId = state.session && state.session.managedDocId;
-    const primaryTarget = managedId
-      ? [{ _ref: "document", _id: managedId }]
-      : [{ _ref: "document", _enum: "ordinal", _value: "targetEnum" }];
-    await action.batchPlay([{
-      _obj: "close",
-      _target: primaryTarget,
-      saving: { _enum: "yesNo", _value: "no" }
-    }], { synchronousExecution: true });
-  } catch (closeErr) {
-    console.warn("[CutMark] close document failed after save:", closeErr);
-    if (state.session && state.session.managedDocId) {
-      await action.batchPlay([{
-        _obj: "close",
-        _target: [{ _ref: "document", _enum: "ordinal", _value: "targetEnum" }],
-        saving: { _enum: "yesNo", _value: "no" }
-      }], { synchronousExecution: true });
-    } else {
-      throw closeErr;
-    }
-  }
+        const managedId = state.session && state.session.managedDocId;
+        const primaryTarget = managedId
+          ? [{ _ref: "document", _id: managedId }]
+          : [{ _ref: "document", _enum: "ordinal", _value: "targetEnum" }];
+        await action.batchPlay([{
+          _obj: "close",
+          _target: primaryTarget,
+          saving: { _enum: "yesNo", _value: "no" }
+        }], { synchronousExecution: true });
+      } catch (closeErr) {
+        console.warn("[CutMark] close document failed after save:", closeErr);
+        if (state.session && state.session.managedDocId) {
+          await action.batchPlay([{
+            _obj: "close",
+            _target: [{ _ref: "document", _enum: "ordinal", _value: "targetEnum" }],
+            saving: { _enum: "yesNo", _value: "no" }
+          }], { synchronousExecution: true });
+        } else {
+          throw closeErr;
+        }
+      }
     });
 
     const psdToken = await fsmod.createPersistentToken(outFile);
@@ -1714,7 +2342,6 @@ async function saveCurrentDocIfAny(retried) {
     persist();
     await updateOutFolderLabel();
     syncExtraOutputControlsFromState();
-    syncExtraOutputControlsFromState();
     return psdToken;
   } catch (e) {
     const msg = (e && (e.message || e.toString())) || "";
@@ -1722,8 +2349,16 @@ async function saveCurrentDocIfAny(retried) {
       try {
         state.session.outputFolderToken = null;
         persist();
-        return await saveCurrentDocIfAny(true);
+        return await saveCurrentDocIfAny(nextRetryCount);
       } catch (_) { }
+    }
+    if (!retried && isOutputFolderError(e)) {
+      const ok = await preflightOutputFolder("save");
+      if (!ok) {
+        toast("保存を中止しました。［出力先］を設定してください。");
+        return null;
+      }
+      return await saveCurrentDocIfAny(nextRetryCount);
     }
     console.warn("[CutMark] saveCurrentDocIfAny:", e);
     toast("出力先が無効でした。『出力先選択』で設定し直すか、もう一度お試しください。");
@@ -1733,16 +2368,28 @@ async function saveCurrentDocIfAny(retried) {
 
 
 /* ============================================================================
- * ナビゲーション：保存して次へ／戻る（履歴モード対応）
+ * ナビゲーション：次へ／戻る（履歴モード対応）
  * ========================================================================== */
 async function openNext() {
   await withOpLock("OpenNext", async function () {
     try {
+      const inHistory = inHistoryView();
+      if (state.session.started && !inHistory) {
+        const ok = await preflightOutputFolder("openNext");
+        if (!ok) { toast("保存を中止しました。［出力先］を設定してください。"); return; }
+      }
       if (!state.session.started) {
-        toast("処理を開始してください（『処理開始』ボタン）"); return;
+        // [MOD] 出力先未設定キャンセル後も「次へ」から再開できるよう、ここで手動開始を許容する
+        const pending = countPendingJobs();
+        if (pending <= 0) { toast("処理対象がありません。ファイルを追加してください。"); return; }
+        const ok = await ensureOutputFolderBeforeStart();
+        if (!ok) { toast("開始をキャンセルしました。『出力先設定』で保存先を指定してください。"); return; }
+        state.session.started = true;
+        persist();
+        renderStatus();
       }
       ensureSessionNav(false);
-      if (inHistoryView()) {
+      if (inHistory) {
         await saveActiveHistoryPSDAndClose();
         const hist = state.session.historyPSD || [];
         const nextIdx = state.session.historyIndex + 1;
@@ -1756,10 +2403,28 @@ async function openNext() {
         }
       } else {
         const hadManaged = !!(state && state.session && state.session.managedDocId != null);
-        const savedToken = await saveCurrentDocIfAny();
-        if (hadManaged && savedToken == null) {
-          toast("保存に失敗したため次のファイルを開きません。［出力先］を確認してください。");
-          return;
+        const docOpen = isDocOpen();
+        let savedToken = null;
+        if (docOpen) {
+          savedToken = await saveCurrentDocIfAny();
+          if (hadManaged && savedToken == null) {
+            if (_cmLastSaveSkippedUnmanaged) {
+              _cmLastSaveSkippedUnmanaged = false;
+              toast("管理外のドキュメントが開かれています。キューから開いたファイルを選択してから再実行してください。");
+            } else {
+              toast("保存に失敗したため次のファイルを開きません。［出力先］を確認してください。");
+            }
+            return;
+          }
+        } else if (hadManaged) {
+          const now = Date.now ? Date.now() : 0;
+          if (now - _cmLastManagedMissingNoticeTs > 800) {
+            _cmLastManagedMissingNoticeTs = now;
+            toast("管理ドキュメントが閉じられたため、キュー処理を続行します。");
+          }
+          state.session.managedDocId = null;
+          state.session.managedJobIndex = -1;
+          persist();
         }
       }
       const idx = nextPendingIndex(state.session.cursor);
@@ -1781,7 +2446,6 @@ async function openNext() {
       persist();
       renderStatus();
       await updateOutFolderLabel();
-      syncExtraOutputControlsFromState();
       syncExtraOutputControlsFromState();
       toast("開きました：" + job.name);
       const acc = getTplCreateAccordionEl();
@@ -1820,17 +2484,27 @@ async function openPrevPSD() {
         try { refocusPanelAfterHostOps(); } catch (_) { }
         return;
       }
-      // ★ 先に履歴の有無を確認（保存先チェックより前）
+      // ★ 履歴の有無を先に確認
       const hist = state.session.historyPSD || [];
       if (hist.length < 1) {
         // [MOD] 1枚目の保存直後も戻れるよう、履歴ゼロのみブロック（S-UI-045/049）
         toast("戻れる項目がありません");
         return;
       }
-      // 現在の管理ドキュメントを保存（必要時のみ）
-      await saveCurrentDocIfAny();
-      const targetIndex = hist.length - 2;
-      await openHistoryAtIndex(targetIndex);
+      const hasManaged = isManagedQueueDocOpen();
+      if (hasManaged) {
+        const ok = await preflightOutputFolder("openPrev");
+        if (!ok) { toast("保存を中止しました。［出力先］を設定してください。"); return; }
+        // 現在編集中の管理ドキュメントを保存し、直前の履歴PSDへ戻る
+        await saveCurrentDocIfAny();
+        const updatedHist = state.session.historyPSD || [];
+        let targetIndex = updatedHist.length - 2; // 今保存した分を除いた1つ前
+        if (targetIndex < 0) targetIndex = updatedHist.length - 1; // 履歴が1件しかない場合は最新を開く
+        await openHistoryAtIndex(targetIndex);
+      } else {
+        // 管理ドキュメントが無い（キュー完了直後など）は最新の履歴PSDを開く
+        await openHistoryAtIndex(hist.length - 1);
+      }
 
       try { refocusPanelAfterHostOps(); } catch (_) { }
     } catch (e) {
@@ -1873,25 +2547,20 @@ function onSubModeToggle() {
   const on = !!chk.checked;
 
   if (!on) {
-    // OFF になったタイミングで、A-B分けオン中にサブ付き配置が行われていれば次番号を +1（1 回だけ）する
-    if (_hasSubPlacementSinceSubOn) {
-      const max = maxForDigits(state.digits);
-      if (state.nextBase >= max) {
+    const res = finalizeSubMode(false, state.nextBase, state.sub);
+    if (res.advanced) {
+      if (res.hitMax) {
         toast("桁数の最大値に達しました。次番号を編集してください。");
-        state.nextBase = max;
-      } else {
-        state.nextBase += 1;
       }
-      _hasSubPlacementSinceSubOn = false;
       ensureExtraOutputStateDefaults();
     }
+    state.nextBase = res.nextBase;
+    state.sub = res.subChar;
     sel.disabled = true;
     try { sel.setAttribute("disabled", ""); } catch (_) { }
     sel.value = "";
-    state.sub = "";
   } else {
-    // ON になったタイミングでフラグをリセットし、サブ文字を初期化
-    _hasSubPlacementSinceSubOn = false;
+    beginSubMode();
     ensureExtraOutputStateDefaults();
     sel.disabled = false;
     try { sel.removeAttribute("disabled"); } catch (_) { }
@@ -2049,7 +2718,7 @@ function wireShortcuts() {
       return;
     }
 
-    // 新仕様: Enter 単体で「保存して次へ」
+    // 新仕様: Enter 単体で「次へ」
     if (!ev.shiftKey && !ev.altKey && !ev.metaKey && !ev.ctrlKey && ev.key === "Enter") {
       // 入力中やインタラクティブ要素上では作動させない（誤発火防止）
       const target = ev.target || document.activeElement;
@@ -2117,15 +2786,28 @@ function wireTemplateCreateForm() {
     fontSel.addEventListener("change", function () {
       markTplDirty("tplFontSel");
       updateTplCreateEnabled();
+      updateFontDisplayLabel();
     });
   }
   wireFontSelectLazy();
   const watchIds = ["tplName", "tplRows", "tplDpi", "tplFontSizePt", "tplX", "tplY", "tplW", "tplH"];
+  const padIds = ["tplPadTop", "tplPadRight", "tplPadBottom", "tplPadLeft"];
+  padIds.forEach(id => watchIds.push(id));
   for (let i = 0; i < watchIds.length; i++) {
     const el = document.getElementById(watchIds[i]);
     if (el) {
       el.addEventListener("input", function () { markTplDirty(watchIds[i]); updateTplCreateEnabled(); });
       el.addEventListener("change", function () { markTplDirty(watchIds[i]); updateTplCreateEnabled(); });
+    }
+  }
+  for (let j = 0; j < padIds.length; j++) {
+    const el = document.getElementById(padIds[j]);
+    if (el) {
+      el.addEventListener("blur", function () {
+        markTplDirty(padIds[j]);
+        validateTplPadding({ silent: false });
+        updateTplCreateEnabled();
+      });
     }
   }
 
@@ -2164,7 +2846,7 @@ function wireUI() {
   });
 
   // テンプレ削除（内蔵/ユーザー問わず）
-  const tplDel = $("#tplDelete") || $("#deleteTplBtn");
+  const tplDel = $("#tplDelete");
   if (tplDel) tplDel.addEventListener("click", async function () {
     const sel = $("#tplSelect");
     const id = sel && sel.value;
@@ -2191,17 +2873,6 @@ function wireUI() {
   });
   try { updateTemplateDeleteEnabled(); } catch (_) { }
 
-  // 旧：選択範囲からテンプレ作成
-  const tplCreateBtnLegacy = $("#tplCreateFromSelection");
-  if (tplCreateBtnLegacy) tplCreateBtnLegacy.addEventListener("click", async function () {
-    const name = $("#tplName") ? $("#tplName").value : "";
-    const rows = parseInt($("#tplRows") ? $("#tplRows").value : "5", 10) || 5;
-    await withOpLock("CreateTemplate", async function () {
-      try { await createTemplateFromSelection({ name: name, rows: rows }); renderTemplateUI(); renderStatus(); toast("テンプレを作成・選択しました"); }
-      catch (e) { toast(e.message || String(e)); }
-    });
-  });
-
   wireTemplateCreateForm();
 
   // 採番
@@ -2224,8 +2895,6 @@ function wireUI() {
   if (subSel) subSel.addEventListener("change", onSubSelectChange);
 
   // 配置
-  const legacyBtn = $("#placeAtTemplate");
-  if (legacyBtn) legacyBtn.addEventListener("click", function () { placeAtRow(1); });
   const selBtn = $("#placeAtSelection");
   if (selBtn) selBtn.addEventListener("click", function () { placeAtSelection(); });
 
@@ -2250,12 +2919,6 @@ function wireUI() {
 
   const setOutBtn = $("#setOutFolder");
   if (setOutBtn) addSetOutFolderHandler(setOutBtn);
-  const clearOutBtn = $("#clearOutFolder");
-  if (clearOutBtn) clearOutBtn.addEventListener("click", async function () {
-    state.session.outputFolderToken = null;
-    persist(); renderStatus(); await updateOutFolderLabel();
-    toast("出力先設定をクリアしました");
-  });
 
   // 追加出力
   const extraOutToggle = $("#extraOutputEnabled");
@@ -2272,80 +2935,44 @@ function wireUI() {
   // ナビゲーション
   const openNextBtn = $("#openNext");
   if (openNextBtn) openNextBtn.addEventListener("click", function () { openNext(); });
-
-  const queueStartBtn = $("#queueStart");
-  if (queueStartBtn) {
-    queueStartBtn.addEventListener("click", async function () {
-      try {
-        if (!state.session.outputFolderToken) {
-          const ok = await ensureOutputFolderBeforeStart();
-          if (!ok) {
-            toast("処理開始を中止しました。『出力先設定』から保存先を指定してください。");
-            return;
-          }
-        }
-        state.session.started = true;
-        persist();
-        renderStatus();
-        await openNext();
-      } catch (e) {
-        console.error("[CutMark] queueStart error:", e);
-        toast(e && (e.message || String(e)));
-      }
-    });
-  }
   const backBtn = $("#backBtn");
   if (backBtn) backBtn.addEventListener("click", function () { openPrevPSD(); });
+}
+
+/**
+ * 自動開始：pending 0 のアイドル状態から追加されたときだけ起動
+ * - 履歴ビュー / 管理外ドキュメント編集中は起動しない
+ * - 出力先未設定の場合は ensureOutputFolderBeforeStart() で確認し、キャンセルなら中止
+ */
+async function autoStartQueueIfIdle(reason) {
+  try {
+    if (!state || !state.session) return;
+    if (state.session.started) return;
+    if (inHistoryView()) return;
+    if (isManagedQueueDocOpen()) return;
+    const pending = countPendingJobs();
+    if (pending <= 0) return;
+    debugLog("autostart/check", "pending=" + pending + " reason=" + (reason || ""));
+    const ok = await ensureOutputFolderBeforeStart();
+    if (!ok) {
+      toast("自動開始を中止しました。『出力先設定』で保存先を指定してください。");
+      return;
+    }
+    state.session.started = true;
+    persist();
+    renderStatus();
+    await openNext();
+  } catch (e) {
+    console.error("[CutMark] autoStartQueueIfIdle:", e);
+    toast(e && (e.message || String(e)));
+  }
 }
 
 /* ============================================================================
  * Dialog theming (host-theme aware)
  * ========================================================================== */
 function ensureDialogThemeStyles() {
-  try {
-    if (document.getElementById("cm-dialog-theme-style")) return;
-    const st = document.createElement("style");
-    st.id = "cm-dialog-theme-style";
-    st.textContent = [
-      'dialog.cm-modal {',
-      '  background: var(--uxp-host-background-color);',
-      '  color: var(--uxp-host-text-color);',
-      '  border: 1px solid var(--uxp-host-border-color);',
-      '  border-radius: 8px;',
-      '  box-shadow: 0 10px 24px rgba(0,0,0,.45);',
-      '  font-size: var(--uxp-host-font-size);',
-      '}',
-      'dialog.cm-modal h2 {',
-      '  margin: 0;',
-      '  font-size: var(--uxp-host-font-size-larger, 14px);',
-      '  font-weight: 600;',
-      '  line-height: 1.3;',
-      '  color: var(--uxp-host-text-color);',
-      '  opacity: 1;',
-      '}',
-      'dialog.cm-modal .desc {',
-      '  white-space: pre-wrap;',
-      '  line-height: 1.6;',
-      '  color: var(--uxp-host-text-color);',
-      '}',
-      'dialog.cm-modal .muted {',
-      '  color: var(--uxp-host-text-color-secondary, #9aa0a6);',
-      '}',
-      'dialog.cm-modal .buttons {',
-      '  display: flex;',
-      '  justify-content: flex-end;',
-      '  gap: 8px;',
-      '  margin-top: 8px;',
-      '}',
-      'dialog.cm-modal::backdrop {',
-      '  background: rgba(0,0,0,.32);',
-      '}',
-      '@media (prefers-color-scheme: light), (prefers-color-scheme: lightest) {',
-      '  dialog.cm-modal::backdrop { background: rgba(0,0,0,.20); }',
-      '}'
-    ].join('\n');
-    document.head.appendChild(st);
-  } catch (_) { }
+  // styles are defined in styles.css（S-AX-504/505/506）
 }
 
 /* ============================================================================
@@ -2354,8 +2981,7 @@ function ensureDialogThemeStyles() {
 async function softResetLikeStartup() {
   restore();
   ensureSessionNav(true);
-  _hasSubPlacementSinceSubOn = false;
-  ensureExtraOutputStateDefaults();
+ensureExtraOutputStateDefaults();
   await loadTemplatesAndSelectActive();
   renderTemplateUI();
   renderStatus();
@@ -2514,24 +3140,24 @@ async function onResetRequest() {
 }
 function ensureResetButton() {
   if (document.getElementById("resetBtn")) return;
-  const acc = document.getElementById("acc-io");
-  const anchor = document.getElementById("openNext");
+  const acc = document.getElementById("io");
+  const anchor = document.getElementById("setOutFolder");
   const btn = document.createElement("button");
   btn.id = "resetBtn";
   btn.textContent = "リセット";
   btn.title = "起動直後と同様に状態を初期化します";
   btn.addEventListener("click", onResetRequest);
   if (anchor && anchor.parentElement) {
-    const row = anchor.closest(".row") || anchor.parentElement;
-    row.classList.add("row-actions");
+    const row = anchor.closest(".pair") || anchor.parentElement;
     anchor.insertAdjacentElement("afterend", btn);
     return;
   }
   if (acc) {
+    const section = acc.querySelector(".section") || acc;
     const row = document.createElement("div");
-    row.className = "row row-actions";
+    row.className = "row";
     row.appendChild(btn);
-    acc.appendChild(row);
+    section.appendChild(row);
   }
 }
 
@@ -2543,14 +3169,14 @@ async function init() {
     restore();
     state.bg.enabled = false;
     ensureSessionNav(true);
-    _hasSubPlacementSinceSubOn = false;
-    ensureExtraOutputStateDefaults();
-    ensureExtraOutputStateDefaults();
+ensureExtraOutputStateDefaults();
     await loadTemplatesAndSelectActive();
     wireUI(); wireShortcuts(); wireFocusHelpers(); wireFocusIndicator(); wireTplCreateAccordion(); ensureFixedRowButtons(); if (typeof DEBUG_DIAG !== "undefined" && DEBUG_DIAG) bindDiagnostics();
+    wireFontChooser();
+    try { setTimeout(function () { warmupFontList(); }, 0); } catch (_) { }
     renderTemplateUI(); renderStatus();
+    updateFontDisplayLabel();
     await updateOutFolderLabel();
-    syncExtraOutputControlsFromState();
     syncExtraOutputControlsFromState();
     const acc = getTplCreateAccordionEl();
     if (acc && isAccordionOpen(acc)) {
@@ -2561,7 +3187,7 @@ async function init() {
     ensureResetButton();
     try { enableAutoWidthOnOpenForPickers(); } catch (_) { }
     focusPanelIfSuitable(document.activeElement);
-    toast("準備完了：『フォルダ追加』『ファイル追加』で読み込み後『処理開始』でスタート。");
+    toast("準備完了：『フォルダ追加』『ファイル追加』から読み込んで開始");
   } catch (e) {
     console.error(e);
     toast(e.message || String(e));
@@ -2574,7 +3200,6 @@ async function init() {
 function enableAutoWidthOnOpenForPickers() {
   const pairs = [
     ["#tplSelect", "#tplSelectMenu"],
-    ["#tplFontSel", "#tplFontMenu"]
   ];
   pairs.forEach(([pid, mid]) => {
     const p = document.querySelector(pid);
@@ -2687,7 +3312,18 @@ async function waitForDocClosedById(prevId, timeoutMs) {
  */
 async function ensureOutputFolderBeforeStart() {
   try {
-    if (state && state.session && state.session.outputFolderToken) return true;
+    if (state && state.session) {
+      const valid = await getUsableOutputFolderFromToken(state.session.outputFolderToken);
+      if (valid) return true;
+      if (state.session.outputFolderToken && !valid) {
+        // 無効トークンを検知したらクリアしてラベルを未設定に戻す
+        state.session.outputFolderToken = null;
+        persist(); await updateOutFolderLabel();
+      }
+    }
+    // [MOD] 出力先未設定時は現在ジョブから自動決定を試みる
+    const autoSet = await tryAutoSetOutputFromCurrentJob();
+    if (autoSet) return true;
     try { const old = document.getElementById("cm-out-dialog"); if (old) old.remove(); } catch (_) { }
     const dlg = document.createElement("dialog");
     dlg.id = "cm-out-dialog";
@@ -2784,109 +3420,6 @@ async function ensureOutputFolderBeforeStart() {
     return false;
   }
 }
-/* === CutMark Save-Guard Injection v4 (preflight + null-retry + openNext/Prev prehook) === */
-(function () {
-  'use strict';
-  try { console.log("[CM:guard] install v4"); } catch (_) { }
-  function isOutFolderErr(e) {
-    var s = (e && (e.message || e.name || e.code || e.toString())) || "";
-    return /output.+folder|未設定|No.+output.+folder|resolveOutputFolder|persistent.+token|getEntryForPersistentToken|invalid.+token/i.test(String(s));
-  }
-  async function ensureOutFolderInteractive() {
-    if (typeof ensureOutputFolderBeforeStart === "function") {
-      var ok = await ensureOutputFolderBeforeStart({ interactive: true, reason: "save" });
-      if (ok) return true;
-      try { if (state && state.session && state.session.outputFolderToken) return true; } catch (_) { }
-      return false;
-    }
-    return false;
-  }
-  async function preflightOutFolder() {
-    if (typeof resolveOutputFolderForCurrentJob === "function") {
-      try { var f = await resolveOutputFolderForCurrentJob(); if (f) return true; } catch (_) { }
-    } else {
-      try { if (state && state.session && state.session.outputFolderToken) return true; } catch (_) { }
-    }
-    var ok = await ensureOutFolderInteractive();
-    return !!ok;
-  }
-  function _toast(msg) {
-    try { toast(msg); } catch (_) { try { console.log("[CutMark CenterBox]", msg); } catch (_) { } }
-  }
-  if (typeof saveCurrentDocIfAny === "function" && !saveCurrentDocIfAny.__cmPatchedV4) {
-    var __origSave = saveCurrentDocIfAny;
-    saveCurrentDocIfAny = async function () {
-      try {
-        var ok0 = await preflightOutFolder();
-        if (!ok0) { _toast("保存を中止しました。［出力先］を設定してください。"); return null; }
-      } catch (_) { }
-      try {
-        var ret = await __origSave.apply(this, arguments);
-        if (ret == null) {
-          var ok1 = await preflightOutFolder();
-          if (!ok1) { _toast("保存を中止しました。［出力先］を設定してください。"); return null; }
-          return await __origSave.apply(this, arguments);
-        }
-        return ret;
-      } catch (e) {
-        if (!isOutFolderErr(e)) throw e;
-        var ok2 = await preflightOutFolder();
-        if (!ok2) { _toast("保存を中止しました。［出力先］を設定してください。"); return null; }
-        return await __origSave.apply(this, arguments);
-      }
-    };
-    saveCurrentDocIfAny.__cmPatchedV4 = true;
-    try { console.log("[CM:guard] saveCurrentDocIfAny patched (v4)"); } catch (_) { }
-  }
-  if (typeof openNext === "function" && !openNext.__cmPatchedV4) {
-    var __origOpenNext = openNext;
-    openNext = async function () {
-      try {
-        var inHistory = false; try { inHistory = (state && state.session && state.session.viewMode === "history"); } catch (_) { }
-        var started = false; try { started = !!(state && state.session && state.session.started); } catch (_) { }
-        if (started && !inHistory) {
-          var ok = await preflightOutFolder();
-          if (!ok) { _toast("保存を中止しました。［出力先］を設定してください。"); return; }
-        }
-      } catch (_) { }
-      return await __origOpenNext.apply(this, arguments);
-    };
-    openNext.__cmPatchedV4 = true;
-    try { console.log("[CM:guard] openNext patched (v4)"); } catch (_) { }
-  }
-  if (typeof openPrevPSD === "function" && !openPrevPSD.__cmPatchedV4) {
-    var __origOpenPrev = openPrevPSD;
-
-    openPrevPSD = async function () {
-      try {
-        var inHistory = false; try { inHistory = (state && state.session && state.session.viewMode === "history"); } catch (_) { }
-        if (!inHistory) {
-          // 履歴がなければ保存先チェックを行わない（誤警告防止）
-          var hist = []; try { hist = (state && state.session && state.session.historyPSD) || []; } catch (_) { }
-          var needSave = false;
-          try {
-            if (typeof isManagedQueueDocOpen === "function") {
-              needSave = isManagedQueueDocOpen() && hist.length >= 2;
-            } else {
-              // フォールバック判定：started が真で履歴が2件以上なら保存が発生し得る
-              var started = !!(state && state.session && state.session.started);
-              needSave = started && hist.length >= 2;
-            }
-          } catch (_) { needSave = hist.length >= 2; }
-          if (needSave) {
-            var ok = await preflightOutFolder();
-            if (!ok) { _toast("保存を中止しました。［出力先］を設定してください。"); return; }
-          }
-        }
-      } catch (_) { }
-      return await __origOpenPrev.apply(this, arguments);
-    };
-    openPrevPSD.__cmPatchedV4 = true;
-    try { console.log("[CM:guard] openPrevPSD patched (v4)"); } catch (_) { }
-  }
-})();
-
-
 // =========================================================================
 // フォーカスインジケータ（Top bar の小円）の配線と状態同期
 //  - 目的: パネルがキーボードフォーカスを持つか（ショートカットが有効か）を可視化
@@ -3045,3 +3578,13 @@ function wireFocusIndicator() {
     console.warn("[FocusIndicator] wiring failed:", e);
   }
 }
+
+
+
+
+
+
+
+
+
+

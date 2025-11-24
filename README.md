@@ -1,17 +1,16 @@
 # CutMark (Photoshop UXP プラグイン)
 
-Photoshop 用 UXP プラグイン **CutMark** の公開用リポジトリです。日本の縦書き絵コンテ用紙のカットナンバーの記入を効率化します。連番リネーム済みの画像を読み込みナンバリング後、PSD/JPG/PNG 書き出しを安全に行います。 
+日本の縦書き絵コンテ用紙のカットナンバー記入作業を効率化します。連番リネーム済みの画像を読み込み、マウスまたはキーボードショートカットでカット番号を配置し、PSD/JPG/PNG として書き出します。
 
-[✨ CutMark ver1.1.0 PhotoshopPlugin .ccx Download](https://github.com/stechdrive/CutMark/releases/download/v1.1.0/jp.furyu-pictures.cutmark_PS.ccx)
-
-
+[✨Download✨](https://github.com/stechdrive/CutMark/releases)
+ReleasesのページからCCXファイルをダウンロードしてください。
 
 ![CutMark パネルのスクリーンショット](./img/plugin_screenshot.jpg)
 
 ## 主な機能
-- 用紙テンプレートに基づくカット番号記入
+- 各種絵コンテ用紙に合わせたテンプレートに基づくカット番号記入
 - 任意の位置へのカット番号の配置
-- キューにフォルダを読み込んで、連続処理
+- キューに画像を読み込んで、連続処理
 
 ## 動作環境
 - Adobe Photoshop 2023（ver24.4.0以降） / 動作チェックはPhotoshop 2026（ver27.0.0）で行っています
@@ -27,6 +26,7 @@ Photoshop 用 UXP プラグイン **CutMark** の公開用リポジトリです�
 
 ## 使い方ガイド
 - 詳細手順は [CutMarkManual.md](./CutMarkManual.md) を参照してください。
+- HTML版マニュアル[CutMarkManual.html](./CutMarkManual.html) ダウンロードしてブラウザで参照してください。
 
 ## Photoshop での読み込み
 - プラグインとして使用する場合
@@ -50,4 +50,3 @@ Photoshop 用 UXP プラグイン **CutMark** の公開用リポジトリです�
 
 ## ライセンス
 MIT License。詳細は `LICENSE.md` を参照してください。
-
