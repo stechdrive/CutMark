@@ -5,6 +5,10 @@
 [✨Download✨](https://github.com/stechdrive/CutMark/releases)
 ReleasesのページからCCXファイルをダウンロードしてください。
 
+[✨CutMark PDF✨](https://stechdrive.github.io/CutMark-PDF/)
+PDF化した絵コンテにカットナンバー記入作業をする場合はこちら
+
+
 ![CutMark パネルのスクリーンショット](./img/plugin_screenshot.jpg)
 
 ## 主な機能
